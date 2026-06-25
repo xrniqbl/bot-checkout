@@ -113,7 +113,27 @@ class ShopeePlatform(BasePlatform):
                 "text=/^Checkout/i",
             ], timeout=8000, what="Checkout")
         except Exception as e:
-            await self.notify(f"Checkout gagal diklik: {e}", screenshot=True)
+            # DIAGNOSA: kumpulkan semua teks tombol/elemen klik di halaman cart
+            try:
+                dump = await self.page.evaluate("""() => {
+                    const out = [];
+                    const els = document.querySelectorAll("button, a, [role='button'], div[class*='button'], div[class*='checkout']");
+                    els.forEach(el => {
+                        const t = (el.innerText||'').trim().replace(/\\s+/g,' ').slice(0,40);
+                        if (t) out.push(t + ' | ' + (el.className||'').toString().slice(0,50));
+                    });
+                    return [...new Set(out)].slice(0, 40).join('\\n');
+                }""")
+            except Exception as de:
+                dump = f"(gagal dump: {de})"
+            # simpan HTML penuh utk analisa
+            try:
+                html = await self.page.content()
+                with open("debug_cart.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+            except Exception:
+                pass
+            await self.notify(f"Checkout gagal. Tombol di halaman:\n{dump}", screenshot=True)
             raise
         await self.page.wait_for_load_state("domcontentloaded")
         await self.page.wait_for_timeout(1500)
