@@ -2,11 +2,15 @@ from platforms.generic import GenericPlatform
 from platforms.shopee import ShopeePlatform
 from platforms.tokopedia import TokopediaPlatform
 
+# domain/penanda tiap platform (termasuk LINK PENDEK share)
+SHOPEE_MARKERS = ("shopee.", "shp.ee", "shopee.co.id", "s.shopee")
+TOKO_MARKERS = ("tokopedia.", "tokopedia.com", "tokopedia.link", "tk.tokopedia", "toko.pe", "ta.tokopedia")
+
 def detect_platform(url: str) -> str:
-    u = url.lower()
-    if "shopee." in u:
+    u = (url or "").lower()
+    if any(m in u for m in SHOPEE_MARKERS):
         return "shopee"
-    if "tokopedia." in u:
+    if any(m in u for m in TOKO_MARKERS):
         return "tokopedia"
     return "generic"
 
@@ -15,4 +19,4 @@ def get_platform(name, account, proxy=None, notifier=None):
         "shopee": ShopeePlatform,
         "tokopedia": TokopediaPlatform,
         "generic": GenericPlatform,
-    }[name](account, proxy, notifier)
+    }.get(name, GenericPlatform)(account, proxy, notifier)

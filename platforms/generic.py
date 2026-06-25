@@ -12,7 +12,7 @@ class GenericPlatform(BasePlatform):
         await self.page.goto(url, wait_until="domcontentloaded")
 
     async def is_in_stock(self):
-        btn = self.page.locator("button:has-text('Add to Cart'), button:has-text('Beli')")
+        btn = self.page.locator("button:has-text('Masukkan Keranjang'), button:has-text('Add to Cart'), button:has-text('Tambah ke Keranjang')")
         try:
             await btn.first.wait_for(timeout=4000)
             return await btn.first.is_enabled()
@@ -29,10 +29,10 @@ class GenericPlatform(BasePlatform):
                 await self.page.locator("input[name='quantity'], input[type='number']").first.fill(str(qty))
             except Exception:
                 pass
-        await self.page.locator("button:has-text('Add to Cart'), button:has-text('Beli')").first.click()
+        await self.page.locator("button:has-text('Masukkan Keranjang'), button:has-text('Add to Cart'), button:has-text('Tambah ke Keranjang')").first.click()
 
     async def goto_checkout(self):
-        await self.page.locator("a:has-text('Checkout'), button:has-text('Checkout')").first.click()
+        await self.page.locator("button:has-text('Beli Sekarang'), button:has-text('Checkout'), a:has-text('Checkout'), button:has-text('Buy Now')").first.click()
         await self.page.wait_for_load_state("domcontentloaded")
 
     async def create_order(self, pay_method, va_bank):
