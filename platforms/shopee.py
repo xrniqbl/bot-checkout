@@ -195,73 +195,87 @@ class ShopeePlatform(BasePlatform):
         return m.get(key, va_bank.strip())
 
     async def create_order(self, pay_method, va_bank):
-        """Alur: Metode Pembayaran -> Lihat Semua -> Transfer Bank -> pilih bank
-        -> Konfirmasi -> kembali ke checkout. BERHENTI sebelum 'Buat Pesanan'."""
+        """DESKTOP web. Di halaman /checkout: Metode Pembayaran tampil sbg tombol
+        langsung. Alur: klik 'Transfer Bank' -> pilih bank (mis BRI) -> (Konfirmasi)
+        -> klik 'Buat Pesanan'. Untuk VA/Transfer Bank, Buat Pesanan hanya membuat
+        pesanan + nomor VA (dana belum terpotong)."""
         await self.page.wait_for_timeout(1500)
-        bank = self._norm_bank(va_bank)
+        bank = self._norm_bank(va_bank) or "BRI"
         try:
-            # 1) Buka daftar lengkap metode: klik 'Lihat Semua' (di baris Metode Pembayaran)
-            await click_any(self.page, [
-                "text=Lihat Semua",
-                "div:has-text('Metode Pembayaran') >> text=Lihat Semua",
-                "text=Metode Pembayaran",
-                "text=Pilih Metode Pembayaran",
-            ], timeout=6000, what="buka daftar metode (Lihat Semua)")
-            await self.page.wait_for_timeout(1500)
+            # scroll ke bagian Metode Pembayaran
+            try:
+                await self.page.locator("text=Metode Pembayaran").first.scroll_into_view_if_needed(timeout=4000)
+            except Exception:
+                pass
+            await self.page.wait_for_timeout(600)
 
-            if pay_method == "va":
-                # 2) Expand kategori 'Transfer Bank' bila ada (accordion)
+            # 1) klik tombol 'Transfer Bank' (desktop: pill langsung; fallback 'Lihat Semua')
+            clicked_tb = False
+            for sel in ["button:has-text('Transfer Bank')", "text=Transfer Bank",
+                        "div[class*='payment'] :text('Transfer Bank')"]:
                 try:
-                    tb = self.page.locator("text=Transfer Bank").first
-                    if await tb.count() > 0:
-                        await tb.click(timeout=3000)
-                        log.info("expand Transfer Bank")
-                        await self.page.wait_for_timeout(1000)
+                    loc = self.page.locator(sel).first
+                    if await loc.count() > 0:
+                        await loc.click(timeout=3500)
+                        clicked_tb = True; log.info(f"klik Transfer Bank via: {sel}"); break
+                except Exception:
+                    continue
+            if not clicked_tb:
+                # fallback layout lama: Lihat Semua dulu
+                try:
+                    await click_any(self.page, ["text=Lihat Semua"], timeout=3000, what="Lihat Semua")
+                    await self.page.wait_for_timeout(1000)
+                    await click_any(self.page, ["text=Transfer Bank"], timeout=3000, what="Transfer Bank (modal)")
+                    clicked_tb = True
                 except Exception:
                     pass
-                # 3) Pilih bank tujuan
-                if bank:
-                    await click_any(self.page, [
-                        f"text=Bank {bank}",
-                        f"text={bank}",
-                        f"div[class*='payment'] :has-text('{bank}')",
-                        f"img[alt*='{bank}']",
-                    ], timeout=5000, what=f"pilih bank {bank}")
-                    await self.page.wait_for_timeout(800)
-            # 4) Konfirmasi pilihan metode (tombol bawah modal)
-            await click_any(self.page, [
-                "button:has-text('Konfirmasi')",
-                "button:has-text('OK')",
-                "button:has-text('Konfirmasi'):not([disabled])",
-            ], timeout=5000, what="Konfirmasi metode")
             await self.page.wait_for_timeout(1500)
-            await self.notify(f"Pembayaran '{bank or pay_method}' dipilih. Siap Buat Pesanan (berhenti sebelum bayar).", screenshot=True)
+
+            # 2) pilih bank tujuan (mis. Bank BRI)
+            await click_any(self.page, [
+                f"text=Bank {bank}",
+                f"text={bank}",
+                f"div[class*='bank'] :has-text('{bank}')",
+                f"label:has-text('{bank}')",
+                f"img[alt*='{bank}']",
+            ], timeout=6000, what=f"pilih Bank {bank}")
+            await self.page.wait_for_timeout(1000)
+
+            # 3) Konfirmasi pilihan bila ada tombol konfirmasi di modal
+            for sel in ["button:has-text('Konfirmasi'):not([disabled])",
+                        "button:has-text('Konfirmasi')", "button:has-text('OK')"]:
+                try:
+                    loc = self.page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click(timeout=2500); log.info("klik Konfirmasi metode"); break
+                except Exception:
+                    continue
+            await self.page.wait_for_timeout(1500)
+            await self.notify(f"Metode 'Transfer Bank - {bank}' dipilih.", screenshot=True)
         except Exception as e:
-            # diagnosa: dump teks metode pembayaran yg terlihat
             try:
                 dump = await self.page.evaluate("""() => {
-                    const out=[]; document.querySelectorAll("div,span,button,label").forEach(el=>{
+                    const out=[]; document.querySelectorAll("button,div,span,label").forEach(el=>{
                         const t=(el.innerText||'').trim();
-                        if(t && t.length<30 && /bank|transfer|pembayaran|konfirmasi|lihat semua|virtual/i.test(t)) out.push(t);
-                    }); return [...new Set(out)].slice(0,30).join('\\n');
+                        if(t && t.length<28 && /bank|transfer|qris|cod|shopeepay|konfirmasi|pesanan|debit|kredit/i.test(t)) out.push(t);
+                    }); return [...new Set(out)].slice(0,40).join('\\n');
                 }""")
             except Exception:
-                dump = "(dump gagal)"
+                dump="(dump gagal)"
             await self.notify(f"Gagal pilih pembayaran: {e}\nTeks terlihat:\n{dump}", screenshot=True)
             raise
-        # 5) Kembali ke halaman checkout -> klik 'Buat Pesanan'
-        #    (VA/Transfer Bank: ini hanya MEMBUAT pesanan + nomor VA, BUKAN memotong dana)
-        await self.page.wait_for_timeout(1500)
+
+        # 4) klik 'Buat Pesanan' (VA: buat pesanan + nomor VA, dana belum terpotong)
+        await self.page.wait_for_timeout(1200)
         try:
             await click_any(self.page, [
-                "button:has-text('Buat Pesanan')",
                 "button:has-text('Buat Pesanan'):not([disabled])",
+                "button:has-text('Buat Pesanan')",
                 "text=Buat Pesanan",
-                "button:has-text('Bayar Sekarang')",
             ], timeout=8000, what="Buat Pesanan")
             await self.page.wait_for_load_state("domcontentloaded")
-            await self.page.wait_for_timeout(2000)
-            await self.notify("✅ Pesanan dibuat! Cek nomor VA utk transfer (dana belum terpotong).", screenshot=True)
+            await self.page.wait_for_timeout(2500)
+            await self.notify(f"✅ Pesanan dibuat (Transfer Bank {bank})! Cek nomor VA utk transfer; dana belum terpotong.", screenshot=True)
         except Exception as e:
             await self.notify(f"Gagal klik Buat Pesanan: {e}", screenshot=True)
             raise
