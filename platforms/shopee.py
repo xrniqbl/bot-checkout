@@ -86,8 +86,12 @@ class ShopeePlatform(BasePlatform):
                         "div[class*='product-briefing'] button:has-text('Beli')"]:
                 try:
                     loc = self.page.locator(sel).first
-                    if await loc.count() > 0 and await loc.is_visible():
-                        await loc.click(timeout=4000)
+                    if await loc.count() > 0:
+                        try:
+                            await loc.scroll_into_view_if_needed(timeout=2500)
+                        except Exception:
+                            pass
+                        await loc.click(timeout=4000, force=True)
                         log.info(f"klik Beli Sekarang via: {sel}")
                         return True
                 except Exception:

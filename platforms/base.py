@@ -137,7 +137,7 @@ class BasePlatform(ABC):
         qty = getattr(task, "qty", 1) or 1
         # JALUR CEPAT: 1 produk -> 'Beli Sekarang' langsung ke checkout (lewati keranjang).
         used_buy_now = False
-        if qty <= 1 and hasattr(self, "buy_now"):
+        if hasattr(self, "buy_now"):  # selalu coba Beli Sekarang dulu
             try:
                 used_buy_now = await self.buy_now(qty)
             except Exception as e:
