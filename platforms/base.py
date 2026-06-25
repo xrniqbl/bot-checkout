@@ -144,6 +144,7 @@ class BasePlatform(ABC):
                 await self.notify(f"Beli Sekarang gagal ({e}), fallback ke keranjang.")
                 used_buy_now = False
         if not used_buy_now:
+            await self.notify("buy_now gagal -> fallback ke jalur keranjang.")
             await self.add_to_cart(qty)
             await self.goto_checkout()
         methods = await self.detect_payments()

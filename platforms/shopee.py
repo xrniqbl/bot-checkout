@@ -125,9 +125,22 @@ class ShopeePlatform(BasePlatform):
         try:
             await self.page.wait_for_url("**/checkout**", timeout=12000)
         except Exception:
-            await self.page.wait_for_timeout(2000)
-        ok = "/checkout" in self.page.url.lower()
-        log.info(f"buy_now sampai checkout: {ok} (url={self.page.url})")
+            await self.page.wait_for_timeout(2500)
+        url = self.page.url
+        ok = "/checkout" in url.lower()
+        log.info(f"buy_now sampai checkout: {ok} (url={url})")
+        if not ok:
+            # diagnosa: apa yg terlihat setelah klik Beli Sekarang
+            try:
+                dump = await self.page.evaluate("""() => {
+                    const out=[]; document.querySelectorAll("button,div[role='button'],a").forEach(el=>{
+                        const t=(el.innerText||'').trim();
+                        if(t && t.length<35 && /beli|keranjang|checkout|variasi|pilih|login|masuk/i.test(t)) out.push(t);
+                    }); return [...new Set(out)].slice(0,25).join(' | ');
+                }""")
+            except Exception:
+                dump="(dump gagal)"
+            await self.notify(f"Beli Sekarang TIDAK pindah ke checkout.\nurl={url}\nTerlihat: {dump}", screenshot=True)
         return ok
 
     async def goto_checkout(self):
