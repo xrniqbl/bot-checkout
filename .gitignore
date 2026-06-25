@@ -1,0 +1,9 @@
+sessions/
+logs/
+*.session
+*_profile/
+database/*.db
+config/.env
+__pycache__/
+*.pyc
+venv/
