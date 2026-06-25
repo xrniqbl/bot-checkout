@@ -76,6 +76,50 @@ class ShopeePlatform(BasePlatform):
         await self.page.wait_for_timeout(900)
         await self._maybe_captcha()
 
+    async def buy_now(self, qty=1):
+        """Klik 'Beli Sekarang' di halaman produk -> langsung ke halaman checkout.
+        Mengembalikan True jika berhasil sampai halaman checkout."""
+        # set kuantitas bila perlu (default 1, jadi biasanya skip)
+        await self.page.wait_for_timeout(800)
+        clicked = False
+        for sel in [
+            "button:has-text('Beli Sekarang')",
+            "button:has-text('Beli Sekrang')",
+            "div[class*='product-briefing'] button:has-text('Beli')",
+            "text=Beli Sekarang",
+        ]:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=4000)
+                    clicked = True
+                    log.info(f"klik Beli Sekarang via: {sel}")
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            log.warning("tombol 'Beli Sekarang' tidak ketemu")
+            return False
+        # setelah klik: bisa muncul popup pilih variasi -> klik konfirmasi 'Beli Sekarang' lagi
+        await self.page.wait_for_timeout(1500)
+        try:
+            confirm = self.page.locator("button:has-text('Beli Sekarang')").last
+            if await confirm.count() > 0 and await confirm.is_visible():
+                await confirm.click(timeout=3000)
+                log.info("konfirmasi variasi -> Beli Sekarang")
+        except Exception:
+            pass
+        # tunggu pindah ke halaman checkout
+        try:
+            await self.page.wait_for_url("**/checkout**", timeout=12000)
+        except Exception:
+            # cek manual via konten halaman
+            await self.page.wait_for_timeout(2000)
+        body = (await self.page.inner_text("body")).lower()
+        ok = ("checkout" in self.page.url.lower()) or ("metode pembayaran" in body) or ("opsi pengiriman" in body)
+        log.info(f"buy_now sampai checkout: {ok} (url={self.page.url})")
+        return ok
+
     async def goto_checkout(self):
         await self.page.goto("https://shopee.co.id/cart", wait_until="domcontentloaded")
         await self.page.wait_for_timeout(2500)  # tunggu cart render (JS)

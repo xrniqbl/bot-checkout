@@ -134,8 +134,18 @@ class BasePlatform(ABC):
         method, bank = resolve_payment(task)
         if task.variant:
             await self.select_variant(task.variant)
-        await self.add_to_cart(task.qty)
-        await self.goto_checkout()
+        qty = getattr(task, "qty", 1) or 1
+        # JALUR CEPAT: 1 produk -> 'Beli Sekarang' langsung ke checkout (lewati keranjang).
+        used_buy_now = False
+        if qty <= 1 and hasattr(self, "buy_now"):
+            try:
+                used_buy_now = await self.buy_now(qty)
+            except Exception as e:
+                await self.notify(f"Beli Sekarang gagal ({e}), fallback ke keranjang.")
+                used_buy_now = False
+        if not used_buy_now:
+            await self.add_to_cart(qty)
+            await self.goto_checkout()
         methods = await self.detect_payments()
         await self.notify(f"Metode bayar tersedia: {methods} | dipilih: {method}/{bank}")
         result = await self.create_order(method, bank)
