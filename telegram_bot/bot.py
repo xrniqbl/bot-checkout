@@ -80,12 +80,43 @@ async def on_button(update: Update, ctx):
     elif data == "m:list":
         await list_tasks_cb(q)
     elif data == "m:login":
-        await q.edit_message_text("🔑 Pilih platform untuk login:", reply_markup=InlineKeyboardMarkup([
+        await q.edit_message_text(
+            "🔑 <b>Login Akun</b>\n\n"
+            "🍪 <b>Login via Cookie</b> (disarankan, lolos anti-bot Shopee)\n"
+            "🌐 <b>Login Manual</b> (buka browser di laptop)",
+            parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍪 Login via Cookie", callback_data="loginc:menu")],
+            [InlineKeyboardButton("🌐 Login Manual (browser)", callback_data="loginm:menu")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")],
+        ]))
+    elif data == "loginm:menu":
+        await q.edit_message_text("🌐 Pilih platform (browser akan terbuka di laptop):",
+            reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🟠 Shopee", callback_data="login:shopee"),
              InlineKeyboardButton("🟢 Tokopedia", callback_data="login:tokopedia")],
             [InlineKeyboardButton("🌐 Website", callback_data="login:generic")],
             [InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")],
         ]))
+    elif data == "loginc:menu":
+        await q.edit_message_text("🍪 Login via Cookie - pilih platform:",
+            reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟠 Shopee", callback_data="loginc:shopee"),
+             InlineKeyboardButton("🟢 Tokopedia", callback_data="loginc:tokopedia")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")],
+        ]))
+    elif data.startswith("loginc:") and data.split(":")[1] in ("shopee","tokopedia"):
+        platform = data.split(":")[1]
+        ctx.user_data["await"] = "cookie_paste"
+        ctx.user_data["cookie_platform"] = platform
+        domain = ".shopee.co.id" if platform=="shopee" else ".tokopedia.com"
+        await q.edit_message_text(
+            f"🍪 <b>Login Cookie {PLATFORM_LABEL[platform]}</b>\n\n"
+            f"1. Login ke {platform} di Chrome HP/laptop sampai masuk\n"
+            f"2. Install extension <b>Cookie-Editor</b>\n"
+            f"3. Buka situs {platform}, klik Cookie-Editor → <b>Export</b> → <b>JSON</b>\n"
+            f"4. <b>Paste hasilnya ke chat ini</b> 👇\n\n"
+            f"(Pesanmu akan dihapus otomatis demi keamanan)",
+            parse_mode=ParseMode.HTML, reply_markup=back_btn())
     elif data == "m:logout":
         await render_accounts(q, "logout")
     elif data == "m:pay":
@@ -236,6 +267,28 @@ async def on_text(update: Update, ctx):
             f"⏱ Presisi NTP (offset {timesync.offset*1000:.0f} ms)\n"
             f"Bot akan pre-warm & menembak otomatis.",
             parse_mode=ParseMode.HTML, reply_markup=main_menu())
+    elif state == "cookie_paste":
+        ctx.user_data.pop("await", None)
+        platform = ctx.user_data.pop("cookie_platform", "shopee")
+        cookie_text = text
+        # hapus pesan cookie demi keamanan
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        acc = "akun1"
+        get_or_create_account(acc, platform)
+        status = await ctx.application.bot.send_message(update.effective_chat.id,
+            f"🍪 Memproses cookie {PLATFORM_LABEL.get(platform)}...")
+        plat = get_platform(platform, acc, None, None)
+        ok, n, msg = await plat.login_with_cookies(cookie_text)
+        if ok:
+            s = db(); a = s.query(Account).filter_by(name=acc).first()
+            a.logged_in = True; s.commit(); s.close()
+        await ctx.application.bot.edit_message_text(
+            chat_id=update.effective_chat.id, message_id=status.message_id,
+            text=(f"{'✅' if ok else '⚠️'} {msg}\n({n} cookie dimuat)"),
+            reply_markup=main_menu())
     else:
         # teks acak -> tampilkan menu
         await show_menu(update.message)

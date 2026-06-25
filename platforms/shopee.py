@@ -7,6 +7,7 @@ class ShopeePlatform(BasePlatform):
     """Shopee. Class CSS-nya obfuscated & berubah -> andalkan TEKS & aria.
     WAJIB diverifikasi saat live; Shopee anti-bot ketat (CAPTCHA mungkin muncul)."""
     name = "shopee"
+    COOKIE_DOMAIN = ".shopee.co.id"
     HOME = "https://shopee.co.id/"
     LOGIN_URL = "https://shopee.co.id/"  # buka homepage, klik tombol login manual (hindari blank /buyer/login)
 

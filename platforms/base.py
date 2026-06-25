@@ -78,6 +78,27 @@ class BasePlatform(ABC):
     def logout(self):
         self.engine.wipe_profile()
 
+    COOKIE_DOMAIN = None  # diisi tiap platform (mis '.shopee.co.id')
+
+    async def login_with_cookies(self, cookie_text):
+        """Login langsung via cookie/session (lewati halaman login & anti-bot)."""
+        from core.cookies import parse_cookies
+        if not self.COOKIE_DOMAIN:
+            return False, 0, "Platform ini tidak mendukung login cookie."
+        cookies = parse_cookies(cookie_text, self.COOKIE_DOMAIN)
+        if not cookies:
+            return False, 0, "Cookie tidak terbaca. Pastikan format benar."
+        await self.open(headless=True)
+        try:
+            await self.engine.context.add_cookies(cookies)
+            await self.page.goto(self.HOME, wait_until="domcontentloaded", timeout=45000)
+            import asyncio; await asyncio.sleep(2)
+            ok = await self.logged_in_now()
+            return ok, len(cookies), ("Login cookie berhasil!" if ok else
+                   "Cookie tersimpan tapi belum terdeteksi login (mungkin cookie kurang/expired).")
+        finally:
+            await self.close()  # profil tersimpan -> cookie ikut tersimpan
+
     @abstractmethod
     async def is_logged_in(self): ...
 

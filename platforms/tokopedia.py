@@ -7,6 +7,7 @@ class TokopediaPlatform(BasePlatform):
     """Tokopedia. Selector pakai data-testid (relatif stabil) + fallback teks.
     Tetap verifikasi saat live karena Tokopedia bisa berubah."""
     name = "tokopedia"
+    COOKIE_DOMAIN = ".tokopedia.com"
     HOME = "https://www.tokopedia.com/"
     LOGIN_URL = "https://www.tokopedia.com/login"
 
