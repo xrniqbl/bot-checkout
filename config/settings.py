@@ -9,6 +9,9 @@ TWOCAPTCHA_API_KEY = os.getenv("TWOCAPTCHA_API_KEY", "")
 HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
 SLOW_MO_MS = int(os.getenv("SLOW_MO_MS", "50"))
 DEFAULT_PROXY = os.getenv("DEFAULT_PROXY", "") or None
+# Pakai profil Chrome ASLI (opsional). Jika diisi, bot pakai folder ini sbg profil
+# -> browser "matang" + bisa pakai sesi login Shopee yg sudah ada (lolos anti-bot).
+CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR", "") or None
 SESSION_ENCRYPTION_KEY = os.getenv("SESSION_ENCRYPTION_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/bot.db")
 

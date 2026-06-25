@@ -35,9 +35,19 @@ class BasePlatform(ABC):
         await self.open(headless=False)
         target = self.LOGIN_URL or self.HOME
         try:
-            await self.page.goto(target, wait_until="commit", timeout=30000)
+            await self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
         except Exception as e:
             log.warning(f"goto login: {e}")
+        # anti-blank: kalau body kosong, reload sekali
+        try:
+            import asyncio
+            await asyncio.sleep(2)
+            body = await self.page.inner_text("body")
+            if len(body.strip()) < 5:
+                log.warning("halaman blank -> reload")
+                await self.page.reload(wait_until="domcontentloaded", timeout=45000)
+        except Exception:
+            pass
         await self.notify(f"Browser {self.name} dibuka di halaman login.\n"
                           f"Silakan LOGIN manual sekarang (punya {timeout_sec}s).\n"
                           f"Setelah berhasil login, profil tersimpan & tetap aktif.")

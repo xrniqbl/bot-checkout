@@ -1,7 +1,7 @@
 import os
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
-from config.settings import HEADLESS, SLOW_MO_MS, DEFAULT_PROXY, SESSIONS_DIR
+from config.settings import HEADLESS, SLOW_MO_MS, DEFAULT_PROXY, SESSIONS_DIR, CHROME_USER_DATA_DIR
 from utils.logger import get_logger
 
 log = get_logger()
@@ -31,7 +31,11 @@ class BrowserEngine:
     def __init__(self, account: str, proxy: str | None = None):
         self.account = account
         self.proxy = proxy or DEFAULT_PROXY
-        self.profile_dir = os.path.join(SESSIONS_DIR, f"{account}_profile")
+        # jika CHROME_USER_DATA_DIR diset -> pakai profil Chrome asli (per akun subfolder)
+        if CHROME_USER_DATA_DIR:
+            self.profile_dir = CHROME_USER_DATA_DIR
+        else:
+            self.profile_dir = os.path.join(SESSIONS_DIR, f"{account}_profile")
         os.makedirs(self.profile_dir, exist_ok=True)
         self._pw = None
         self.context = None
