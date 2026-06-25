@@ -8,6 +8,7 @@ class ShopeePlatform(BasePlatform):
     WAJIB diverifikasi saat live; Shopee anti-bot ketat (CAPTCHA mungkin muncul)."""
     name = "shopee"
     HOME = "https://shopee.co.id/"
+    LOGIN_URL = "https://shopee.co.id/buyer/login"
 
     LOGIN_INDICATORS = [
         "[class*='navbar__username']",

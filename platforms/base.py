@@ -29,22 +29,41 @@ class BasePlatform(ABC):
         await self.engine.close()   # profil tersimpan -> tetap login
 
     # ---- LOGIN: dibuka non-headless agar user login sekali, lalu STAY ----
-    async def interactive_login(self, timeout_sec=180):
+    LOGIN_URL = None  # diisi tiap platform
+
+    async def interactive_login(self, timeout_sec=240):
         await self.open(headless=False)
-        await self.page.goto(self.HOME, wait_until="domcontentloaded")
-        await self.notify(f"Browser {self.name} dibuka. Silakan LOGIN manual sekarang "
-                          f"(punya {timeout_sec}s). Profil akan tersimpan & tetap login.")
-        # tunggu sampai terdeteksi login atau timeout
+        target = self.LOGIN_URL or self.HOME
+        try:
+            await self.page.goto(target, wait_until="commit", timeout=30000)
+        except Exception as e:
+            log.warning(f"goto login: {e}")
+        await self.notify(f"Browser {self.name} dibuka di halaman login.\n"
+                          f"Silakan LOGIN manual sekarang (punya {timeout_sec}s).\n"
+                          f"Setelah berhasil login, profil tersimpan & tetap aktif.")
+        # cek status login TANPA reload halaman (biar tidak loading terus)
         import asyncio
-        for _ in range(timeout_sec):
-            if await self.is_logged_in():
-                await self.notify("Login terdeteksi & tersimpan. Akun akan STAY login.")
-                await self.close()
-                return True
-            await asyncio.sleep(1)
-        await self.notify("Timeout login. Coba /login lagi.")
+        for _ in range(timeout_sec // 2):
+            try:
+                if await self.logged_in_now():
+                    await self.notify("✅ Login terdeteksi & tersimpan. Akun akan STAY login.")
+                    await self.engine.persist() if hasattr(self.engine, "persist") else None
+                    await self.close()
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+        await self.notify("⏳ Timeout login (belum terdeteksi). Coba /start > Login lagi.")
         await self.close()
         return False
+
+    async def logged_in_now(self):
+        """Cek login pada halaman yg SEDANG terbuka (tanpa navigasi)."""
+        from core.dom import exists
+        inds = getattr(self, "LOGIN_INDICATORS", [])
+        if not inds:
+            return False
+        return await exists(self.page, inds, timeout=800)
 
     def logout(self):
         self.engine.wipe_profile()

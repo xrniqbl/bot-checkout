@@ -8,6 +8,7 @@ class TokopediaPlatform(BasePlatform):
     Tetap verifikasi saat live karena Tokopedia bisa berubah."""
     name = "tokopedia"
     HOME = "https://www.tokopedia.com/"
+    LOGIN_URL = "https://www.tokopedia.com/login"
 
     LOGIN_INDICATORS = [
         "[data-testid='btnHeaderUserName']",
