@@ -279,10 +279,22 @@ async def menu_cmd(update: Update, ctx):
     if not await guard(update): return
     await show_menu(update.message)
 
+
+async def on_error(update, ctx):
+    log.error(f"Update error: {ctx.error}")
+
 def build_app():
     init_db()
     scheduler.start()
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (ApplicationBuilder()
+           .token(TELEGRAM_BOT_TOKEN)
+           .connect_timeout(30)
+           .read_timeout(30)
+           .write_timeout(30)
+           .pool_timeout(30)
+           .get_updates_read_timeout(45)
+           .build())
+    app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
