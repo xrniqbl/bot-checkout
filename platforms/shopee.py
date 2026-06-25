@@ -77,46 +77,52 @@ class ShopeePlatform(BasePlatform):
         await self._maybe_captcha()
 
     async def buy_now(self, qty=1):
-        """Klik 'Beli Sekarang' di halaman produk -> langsung ke halaman checkout.
-        Mengembalikan True jika berhasil sampai halaman checkout."""
-        # set kuantitas bila perlu (default 1, jadi biasanya skip)
-        await self.page.wait_for_timeout(800)
-        clicked = False
-        for sel in [
-            "button:has-text('Beli Sekarang')",
-            "button:has-text('Beli Sekrang')",
-            "div[class*='product-briefing'] button:has-text('Beli')",
-            "text=Beli Sekarang",
-        ]:
-            try:
-                loc = self.page.locator(sel).first
-                if await loc.count() > 0:
-                    await loc.click(timeout=4000)
-                    clicked = True
-                    log.info(f"klik Beli Sekarang via: {sel}")
-                    break
-            except Exception:
-                continue
-        if not clicked:
+        """Klik 'Beli Sekarang' -> WAJIB sampai URL /checkout. Tangani popup variasi.
+        Return True hanya jika benar2 pindah ke halaman checkout (cek URL, bukan teks
+        -- footer produk punya kata 'Metode Pembayaran' yg bikin false positive)."""
+        await self.page.wait_for_timeout(1000)
+        async def _click_beli():
+            for sel in ["button:has-text('Beli Sekarang')", "text=Beli Sekarang",
+                        "div[class*='product-briefing'] button:has-text('Beli')"]:
+                try:
+                    loc = self.page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click(timeout=4000)
+                        log.info(f"klik Beli Sekarang via: {sel}")
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        if not await _click_beli():
             log.warning("tombol 'Beli Sekarang' tidak ketemu")
             return False
-        # setelah klik: bisa muncul popup pilih variasi -> klik konfirmasi 'Beli Sekarang' lagi
         await self.page.wait_for_timeout(1500)
+
+        # cek apakah muncul popup variasi (mis 'Silakan pilih variasi')
         try:
-            confirm = self.page.locator("button:has-text('Beli Sekarang')").last
-            if await confirm.count() > 0 and await confirm.is_visible():
-                await confirm.click(timeout=3000)
-                log.info("konfirmasi variasi -> Beli Sekarang")
+            body = (await self.page.inner_text("body")).lower()
+            if "pilih variasi" in body or "silakan pilih" in body:
+                log.info("popup variasi muncul -> pilih opsi pertama")
+                # pilih opsi variasi pertama yg tersedia
+                try:
+                    opt = self.page.locator("button[class*='product-variation']:not([disabled])").first
+                    if await opt.count() > 0:
+                        await opt.click(timeout=2500)
+                        await self.page.wait_for_timeout(600)
+                except Exception:
+                    pass
+                # klik Beli Sekarang konfirmasi di popup
+                await _click_beli()
         except Exception:
             pass
-        # tunggu pindah ke halaman checkout
+
+        # tunggu navigasi ke /checkout (KETAT)
         try:
             await self.page.wait_for_url("**/checkout**", timeout=12000)
         except Exception:
-            # cek manual via konten halaman
             await self.page.wait_for_timeout(2000)
-        body = (await self.page.inner_text("body")).lower()
-        ok = ("checkout" in self.page.url.lower()) or ("metode pembayaran" in body) or ("opsi pengiriman" in body)
+        ok = "/checkout" in self.page.url.lower()
         log.info(f"buy_now sampai checkout: {ok} (url={self.page.url})")
         return ok
 
@@ -201,6 +207,10 @@ class ShopeePlatform(BasePlatform):
         pesanan + nomor VA (dana belum terpotong)."""
         await self.page.wait_for_timeout(1500)
         bank = self._norm_bank(va_bank) or "BRI"
+        # GUARD: pastikan benar2 di halaman checkout (hindari salah klik logo bank di footer produk)
+        if "/checkout" not in self.page.url.lower():
+            await self.notify(f"Belum di halaman checkout (url={self.page.url}). Batalkan pilih pembayaran.", screenshot=True)
+            raise RuntimeError("not on checkout page")
         try:
             # scroll ke bagian Metode Pembayaran
             try:
