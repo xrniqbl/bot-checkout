@@ -78,15 +78,45 @@ class ShopeePlatform(BasePlatform):
 
     async def goto_checkout(self):
         await self.page.goto("https://shopee.co.id/cart", wait_until="domcontentloaded")
-        # centang semua item dulu jika ada checkbox 'pilih semua'
+        await self.page.wait_for_timeout(2500)  # tunggu cart render (JS)
+        await self._maybe_captcha()
+        # 1) Centang "Pilih Semua". Shopee render checkbox sbg <div class*='checkbox'>
+        #    (bukan <input>), jadi coba banyak strategi.
+        checked = False
+        for sel in [
+            "label:has-text('Pilih Semua')",
+            "text=Pilih Semua",
+            "div[class*='select-all'] [class*='checkbox']",
+            "div[class*='checkbox__input']",
+            "[class*='shopee-checkbox']",
+            "input[type='checkbox']",
+        ]:
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=2500, force=True)
+                    checked = True
+                    log.info(f"centang via: {sel}")
+                    break
+            except Exception:
+                continue
+        if not checked:
+            log.warning("checkbox 'Pilih Semua' tidak ketemu, lanjut coba Checkout")
+        await self.page.wait_for_timeout(1200)
+        # 2) Klik Checkout (tombol bar bawah, sering di dalam <span>)
         try:
-            await click_any(self.page, ["text=Pilih Semua", "input[type='checkbox']"],
-                            timeout=2500, what="pilih semua")
-        except Exception:
-            pass
-        await click_any(self.page, ["button:has-text('Checkout')", "text=Checkout"],
-                        what="Checkout")
+            await click_any(self.page, [
+                "button:has-text('Checkout')",
+                "[class*='checkout'] button:has-text('Checkout')",
+                "button:has-text('Check Out')",
+                "div[class*='cart-page-bottom'] button",
+                "text=/^Checkout/i",
+            ], timeout=8000, what="Checkout")
+        except Exception as e:
+            await self.notify(f"Checkout gagal diklik: {e}", screenshot=True)
+            raise
         await self.page.wait_for_load_state("domcontentloaded")
+        await self.page.wait_for_timeout(1500)
 
     async def create_order(self, pay_method, va_bank):
         try:
