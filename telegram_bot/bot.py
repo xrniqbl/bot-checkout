@@ -1,27 +1,35 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (ApplicationBuilder, CommandHandler,
-                          CallbackQueryHandler, ContextTypes)
+from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyKeyboardMarkup)
+from telegram.constants import ParseMode
+from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
+                          CallbackQueryHandler, ContextTypes, filters)
 import io
 from datetime import datetime
-from core import scheduler
-from core.flashsale import FlashSaleRunner
-from utils.timesync import timesync
 
 from config.settings import TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS
-from database.models import init_db, db, Task, Account, get_or_create_account
+from database.models import (init_db, db, Task, Account, get_or_create_account)
 from platforms import detect_platform, get_platform
+from core import scheduler
+from utils.timesync import timesync
 from utils.logger import get_logger
 
 log = get_logger()
 
+PLATFORM_LABEL = {"shopee": "🟠 Shopee", "tokopedia": "🟢 Tokopedia", "generic": "🌐 Website"}
+
+# ---------------- akses ----------------
 def authorized(uid):
     return (not ALLOWED_USER_IDS) or (uid in ALLOWED_USER_IDS)
 
 async def guard(update: Update):
-    if not authorized(update.effective_user.id):
-        await update.message.reply_text("Akses ditolak."); return False
+    uid = update.effective_user.id
+    if not authorized(uid):
+        msg = update.message or (update.callback_query and update.callback_query.message)
+        if msg: await msg.reply_text("⛔ Akses ditolak. Kamu tidak diizinkan memakai bot ini.")
+        return False
     return True
 
+# ---------------- notifier ----------------
 def make_notifier(app, chat_id):
     async def notifier(text, screenshot=None):
         await app.bot.send_message(chat_id=chat_id, text=text[:4000])
@@ -29,173 +37,254 @@ def make_notifier(app, chat_id):
             await app.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(screenshot))
     return notifier
 
+# ---------------- menu utama ----------------
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Tambah Produk", callback_data="m:add"),
+         InlineKeyboardButton("📋 Daftar Task", callback_data="m:list")],
+        [InlineKeyboardButton("🔑 Login Akun", callback_data="m:login"),
+         InlineKeyboardButton("🚪 Logout", callback_data="m:logout")],
+        [InlineKeyboardButton("💳 Atur Pembayaran", callback_data="m:pay"),
+         InlineKeyboardButton("⚡ Flash Sale", callback_data="m:flash")],
+        [InlineKeyboardButton("❓ Bantuan", callback_data="m:help")],
+    ])
+
+WELCOME = (
+    "🛒 <b>Checkout Bot</b>\n"
+    "Belanja otomatis Shopee / Tokopedia / Website.\n\n"
+    "Pilih menu di bawah 👇 (tanpa perlu ketik perintah)."
+)
+
+async def show_menu(target, edit=False):
+    if edit:
+        await target.edit_message_text(WELCOME, reply_markup=main_menu(), parse_mode=ParseMode.HTML)
+    else:
+        await target.reply_text(WELCOME, reply_markup=main_menu(), parse_mode=ParseMode.HTML)
+
 async def start(update: Update, ctx):
     if not await guard(update): return
-    await update.message.reply_text(
-        "Bot Checkout siap.\n\n"
-        "PERTAMA KALI:\n"
-        "/login <akun> <platform>  - login sekali (browser terbuka), lalu STAY login\n"
-        "  contoh: /login akun1 shopee\n"
-        "/setpayment <akun> <va|ewallet> <bank>  - setting bayar di awal\n"
-        "  contoh: /setpayment akun1 va BCA\n\n"
-        "PAKAI:\n"
-        "/addproduct <link>  - tambah task + wizard tombol\n"
-        "/list  - daftar task\n"
-        "/run <id>  - jalankan\n"
-        "/logout <akun>  - hapus login akun"
-    )
+    ctx.user_data.clear()
+    await show_menu(update.message)
 
-async def login(update: Update, ctx):
-    if not await guard(update): return
-    if len(ctx.args) < 2:
-        await update.message.reply_text("Pakai: /login <akun> <shopee|tokopedia|generic>"); return
-    acc_name, platform = ctx.args[0], ctx.args[1]
-    get_or_create_account(acc_name, platform)
-    notifier = make_notifier(ctx.application, update.effective_chat.id)
-    plat = get_platform(platform, acc_name, None, notifier)
-    await update.message.reply_text(f"Membuka browser utk login {platform} ({acc_name})...")
-    ok = await plat.interactive_login()
-    if ok:
-        s = db(); a = s.query(Account).filter_by(name=acc_name).first()
-        a.logged_in = True; s.commit(); s.close()
-
-async def logout(update: Update, ctx):
-    if not await guard(update): return
-    acc_name = ctx.args[0] if ctx.args else "akun1"
-    s = db(); a = s.query(Account).filter_by(name=acc_name).first()
-    platform = a.platform if a else "generic"
-    if a: a.logged_in = False; s.commit()
-    s.close()
-    get_platform(platform, acc_name).logout()
-    await update.message.reply_text(f"Akun {acc_name} sudah logout (profil dihapus).")
-
-async def setpayment(update: Update, ctx):
-    if not await guard(update): return
-    if len(ctx.args) < 2:
-        await update.message.reply_text("Pakai: /setpayment <akun> <va|ewallet|cod> [bank]"); return
-    acc_name, method = ctx.args[0], ctx.args[1]
-    bank = ctx.args[2] if len(ctx.args) > 2 else "BCA"
-    get_or_create_account(acc_name)
-    s = db(); a = s.query(Account).filter_by(name=acc_name).first()
-    a.pay_method = method; a.va_bank = bank; s.commit(); s.close()
-    await update.message.reply_text(f"Setting bayar {acc_name}: {method} {bank} (dipakai default tiap checkout).")
-
-async def addproduct(update: Update, ctx):
-    if not await guard(update): return
-    if not ctx.args:
-        await update.message.reply_text("Pakai: /addproduct <link>"); return
-    url = ctx.args[0]; platform = detect_platform(url)
-    acc = ctx.args[1] if len(ctx.args) > 1 else "akun1"
-    s = db(); t = Task(product_url=url, platform=platform, account_name=acc, qty=1, mode="instant")
-    s.add(t); s.commit(); tid = t.id; s.close()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Qty 1", callback_data=f"qty:{tid}:1"),
-         InlineKeyboardButton("Qty 5", callback_data=f"qty:{tid}:5"),
-         InlineKeyboardButton("Max", callback_data=f"qty:{tid}:0")],
-        [InlineKeyboardButton("Mode Instant", callback_data=f"mode:{tid}:instant"),
-         InlineKeyboardButton("Restock Monitor", callback_data=f"mode:{tid}:restock")],
-        [InlineKeyboardButton("Override VA BCA", callback_data=f"va:{tid}:BCA"),
-         InlineKeyboardButton("Override VA Mandiri", callback_data=f"va:{tid}:Mandiri")],
-        [InlineKeyboardButton("JALANKAN", callback_data=f"run:{tid}")],
-    ])
-    await update.message.reply_text(
-        f"Task #{tid} (platform={platform}, akun={acc}).\n"
-        f"Pembayaran default ikut /setpayment akun. Atur opsi lain:", reply_markup=kb)
-
+# ---------------- router tombol ----------------
 async def on_button(update: Update, ctx):
+    if not await guard(update): return
     q = update.callback_query; await q.answer()
-    parts = q.data.split(":"); action = parts[0]; tid = int(parts[1])
-    s = db(); t = s.get(Task, tid)
-    if not t:
-        await q.edit_message_text("Task tidak ada."); s.close(); return
-    if action == "qty":
-        t.qty = int(parts[2]); s.commit()
-        await q.edit_message_text(f"Qty: {'MAX' if t.qty==0 else t.qty} (task #{tid})")
-    elif action == "va":
-        t.va_bank = parts[2]; t.pay_method = "va"; s.commit()
-        await q.edit_message_text(f"Override VA: {t.va_bank} (task #{tid})")
-    elif action == "mode":
-        t.mode = parts[2]; s.commit()
-        await q.edit_message_text(f"Mode: {t.mode} (task #{tid})")
-    elif action == "run":
-        await q.edit_message_text(f"Menjalankan task #{tid}...")
-        await execute_task(ctx.application, q.message.chat_id, tid)
-    s.close()
+    data = q.data
+    # --- menu utama ---
+    if data == "m:add":
+        ctx.user_data["await"] = "product_link"
+        await q.edit_message_text("📎 Kirim <b>link produk</b> yang ingin dibeli:",
+                                  parse_mode=ParseMode.HTML,
+                                  reply_markup=back_btn())
+    elif data == "m:list":
+        await list_tasks_cb(q)
+    elif data == "m:login":
+        await q.edit_message_text("🔑 Pilih platform untuk login:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟠 Shopee", callback_data="login:shopee"),
+             InlineKeyboardButton("🟢 Tokopedia", callback_data="login:tokopedia")],
+            [InlineKeyboardButton("🌐 Website", callback_data="login:generic")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")],
+        ]))
+    elif data == "m:logout":
+        await render_accounts(q, "logout")
+    elif data == "m:pay":
+        await render_accounts(q, "pay")
+    elif data == "m:flash":
+        ctx.user_data["await"] = "flash_link"
+        await q.edit_message_text(
+            "⚡ <b>Flash Sale Terjadwal</b>\nKirim <b>link produk</b> dulu:",
+            parse_mode=ParseMode.HTML, reply_markup=back_btn())
+    elif data == "m:help":
+        await q.edit_message_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=back_btn())
+    elif data == "m:home":
+        ctx.user_data.clear()
+        await show_menu(q, edit=True)
 
+    # --- login platform dipilih ---
+    elif data.startswith("login:"):
+        platform = data.split(":")[1]
+        acc = "akun1"
+        get_or_create_account(acc, platform)
+        notifier = make_notifier(ctx.application, q.message.chat_id)
+        await q.edit_message_text(f"🌐 Membuka browser untuk login {PLATFORM_LABEL[platform]} "
+                                  f"(<code>{acc}</code>)...\nSilakan login manual di jendela browser.",
+                                  parse_mode=ParseMode.HTML)
+        plat = get_platform(platform, acc, None, notifier)
+        ok = await plat.interactive_login()
+        if ok:
+            s = db(); a = s.query(Account).filter_by(name=acc).first()
+            a.logged_in = True; s.commit(); s.close()
+            await ctx.application.bot.send_message(q.message.chat_id,
+                "✅ Login tersimpan & akan tetap aktif.", reply_markup=main_menu())
+        else:
+            await ctx.application.bot.send_message(q.message.chat_id,
+                "⚠️ Login belum terdeteksi. Coba lagi.", reply_markup=main_menu())
+
+    # --- pilih akun utk logout / pay ---
+    elif data.startswith("acc:"):
+        _, mode, acc = data.split(":")
+        if mode == "logout":
+            s = db(); a = s.query(Account).filter_by(name=acc).first()
+            platform = a.platform if a else "generic"
+            if a: a.logged_in = False; s.commit()
+            s.close()
+            get_platform(platform, acc).logout()
+            await q.edit_message_text(f"🚪 Akun <code>{acc}</code> sudah logout.",
+                                      parse_mode=ParseMode.HTML, reply_markup=back_btn())
+        elif mode == "pay":
+            ctx.user_data["pay_acc"] = acc
+            await q.edit_message_text(f"💳 Pilih metode bayar untuk <code>{acc}</code>:",
+                parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏦 VA BCA", callback_data=f"setpay:{acc}:va:BCA"),
+                 InlineKeyboardButton("🏦 VA Mandiri", callback_data=f"setpay:{acc}:va:Mandiri")],
+                [InlineKeyboardButton("🏦 VA BNI", callback_data=f"setpay:{acc}:va:BNI"),
+                 InlineKeyboardButton("🏦 VA BRI", callback_data=f"setpay:{acc}:va:BRI")],
+                [InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")],
+            ]))
+    elif data.startswith("setpay:"):
+        _, acc, method, bank = data.split(":")
+        get_or_create_account(acc)
+        s = db(); a = s.query(Account).filter_by(name=acc).first()
+        a.pay_method = method; a.va_bank = bank; s.commit(); s.close()
+        await q.edit_message_text(f"✅ Pembayaran <code>{acc}</code>: <b>{method.upper()} {bank}</b>\n"
+                                  f"Dipakai otomatis tiap checkout.",
+                                  parse_mode=ParseMode.HTML, reply_markup=back_btn())
+
+    # --- wizard task ---
+    elif data.startswith("qty:"):
+        _, tid, val = data.split(":"); tid = int(tid)
+        s = db(); t = s.get(Task, tid); t.qty = int(val); s.commit(); s.close()
+        await q.edit_message_reply_markup(reply_markup=task_wizard(tid))
+        await q.answer(f"Qty: {'MAX' if val=='0' else val}")
+    elif data.startswith("mode:"):
+        _, tid, val = data.split(":"); tid = int(tid)
+        s = db(); t = s.get(Task, tid); t.mode = val; s.commit(); s.close()
+        await q.edit_message_reply_markup(reply_markup=task_wizard(tid))
+        await q.answer(f"Mode: {val}")
+    elif data.startswith("run:"):
+        tid = int(data.split(":")[1])
+        await q.edit_message_text(f"🚀 Menjalankan task #{tid}...")
+        await execute_task(ctx.application, q.message.chat_id, tid)
+
+def back_btn():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Menu Utama", callback_data="m:home")]])
+
+def task_wizard(tid):
+    s = db(); t = s.get(Task, tid); s.close()
+    q_lbl = lambda v: ("✅ " if t.qty==v else "") + ("MAX" if v==0 else str(v))
+    m_lbl = lambda v: ("✅ " if t.mode==v else "")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(q_lbl(1), callback_data=f"qty:{tid}:1"),
+         InlineKeyboardButton(q_lbl(5), callback_data=f"qty:{tid}:5"),
+         InlineKeyboardButton(q_lbl(0), callback_data=f"qty:{tid}:0")],
+        [InlineKeyboardButton(m_lbl('instant')+"⚡ Instant", callback_data=f"mode:{tid}:instant"),
+         InlineKeyboardButton(m_lbl('restock')+"🔄 Restock", callback_data=f"mode:{tid}:restock")],
+        [InlineKeyboardButton("🚀 JALANKAN", callback_data=f"run:{tid}")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="m:home")],
+    ])
+
+async def render_accounts(q, mode):
+    s = db(); accs = s.query(Account).all(); s.close()
+    if not accs:
+        await q.edit_message_text("Belum ada akun. Login dulu lewat 🔑 Login Akun.",
+                                  reply_markup=back_btn()); return
+    rows = [[InlineKeyboardButton(f"{PLATFORM_LABEL.get(a.platform,a.platform)} • {a.name}"
+             + (" ✅" if a.logged_in else ""), callback_data=f"acc:{mode}:{a.name}")] for a in accs]
+    rows.append([InlineKeyboardButton("⬅️ Kembali", callback_data="m:home")])
+    title = "🚪 Pilih akun untuk logout:" if mode=="logout" else "💳 Pilih akun untuk atur bayar:"
+    await q.edit_message_text(title, reply_markup=InlineKeyboardMarkup(rows))
+
+# ---------------- input teks (link / jadwal) ----------------
+async def on_text(update: Update, ctx):
+    if not await guard(update): return
+    state = ctx.user_data.get("await")
+    text = update.message.text.strip()
+    if state == "product_link":
+        ctx.user_data.pop("await", None)
+        platform = detect_platform(text)
+        s = db(); t = Task(product_url=text, platform=platform, account_name="akun1",
+                           qty=1, mode="instant"); s.add(t); s.commit(); tid=t.id; s.close()
+        await update.message.reply_text(
+            f"✅ Task #{tid} dibuat\n{PLATFORM_LABEL.get(platform)}\n\nAtur opsi:",
+            reply_markup=task_wizard(tid))
+    elif state == "flash_link":
+        ctx.user_data["flash_link"] = text
+        ctx.user_data["await"] = "flash_time"
+        await update.message.reply_text(
+            "🕒 Kirim <b>waktu sale</b> (format: <code>YYYY-MM-DD HH:MM:SS</code>)\n"
+            "Contoh: <code>2026-07-01 20:00:00</code>", parse_mode=ParseMode.HTML)
+    elif state == "flash_time":
+        try:
+            target = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            await update.message.reply_text("❌ Format salah. Contoh: 2026-07-01 20:00:00"); return
+        url = ctx.user_data.pop("flash_link"); ctx.user_data.pop("await", None)
+        platform = detect_platform(url); acc="akun1"
+        s = db(); t = Task(product_url=url, platform=platform, account_name=acc,
+                           mode="scheduled", run_at=target); s.add(t); s.commit(); tid=t.id; s.close()
+        chat_id = update.effective_chat.id; epoch = target.timestamp()
+        async def job():
+            notifier = make_notifier(ctx.application, chat_id)
+            plat = get_platform(platform, acc, None, notifier)
+            await plat.run_flashsale(t, epoch)
+        scheduler.schedule_flashsale(target, job, job_id=f"flash_{tid}", lead_sec=150)
+        timesync.sync()
+        await update.message.reply_text(
+            f"⚡ <b>Flash Sale #{tid} dijadwalkan!</b>\n"
+            f"{PLATFORM_LABEL.get(platform)}\n🕒 {text}\n"
+            f"⏱ Presisi NTP (offset {timesync.offset*1000:.0f} ms)\n"
+            f"Bot akan pre-warm & menembak otomatis.",
+            parse_mode=ParseMode.HTML, reply_markup=main_menu())
+    else:
+        # teks acak -> tampilkan menu
+        await show_menu(update.message)
+
+# ---------------- eksekusi ----------------
 async def execute_task(app, chat_id, tid):
     s = db(); t = s.get(Task, tid); s.close()
     notifier = make_notifier(app, chat_id)
     plat = get_platform(t.platform, t.account_name, None, notifier)
     if t.mode == "restock":
-        await app.bot.send_message(chat_id, f"Monitor restock task #{tid} dimulai...")
+        await app.bot.send_message(chat_id, f"🔄 Monitor restock task #{tid} aktif...")
         await plat.run_restock(t)
     else:
         await plat.run(t)
+    await app.bot.send_message(chat_id, "Selesai.", reply_markup=main_menu())
 
-async def list_tasks(update: Update, ctx):
-    if not await guard(update): return
+async def list_tasks_cb(q):
     s = db(); rows = s.query(Task).all(); s.close()
     if not rows:
-        await update.message.reply_text("Belum ada task."); return
-    lines = [f"#{t.id} [{t.platform}/{t.account_name}] qty={t.qty} mode={t.mode} status={t.status}" for t in rows]
-    await update.message.reply_text("\n".join(lines))
+        await q.edit_message_text("📋 Belum ada task.", reply_markup=back_btn()); return
+    lines = ["📋 <b>Daftar Task</b>\n"]
+    for t in rows:
+        emo = {"success":"✅","failed":"❌","pending":"⏳","running":"🔄"}.get(t.status,"•")
+        lines.append(f"{emo} <b>#{t.id}</b> {PLATFORM_LABEL.get(t.platform,t.platform)} "
+                     f"qty={'MAX' if t.qty==0 else t.qty} • {t.mode} • {t.status}")
+    await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=back_btn())
 
-async def run_cmd(update: Update, ctx):
+HELP_TEXT = (
+    "❓ <b>Cara Pakai</b>\n\n"
+    "1️⃣ <b>Login Akun</b> – login sekali, tetap aktif\n"
+    "2️⃣ <b>Atur Pembayaran</b> – pilih VA bank default\n"
+    "3️⃣ <b>Tambah Produk</b> – tempel link, pilih qty & mode\n"
+    "    • ⚡ Instant: beli sekarang\n"
+    "    • 🔄 Restock: tunggu barang ada lalu auto-beli\n"
+    "4️⃣ <b>Flash Sale</b> – jadwalkan beli tepat waktu (presisi NTP)\n\n"
+    "Bot berhenti di halaman VA → kamu bayar manual. 💳"
+)
+
+# ---------------- commands fallback ----------------
+async def menu_cmd(update: Update, ctx):
     if not await guard(update): return
-    await execute_task(ctx.application, update.effective_chat.id, int(ctx.args[0]))
-
-
-async def flashsale(update: Update, ctx):
-    """/flashsale <link> <YYYY-MM-DD HH:MM:SS> [akun] [varian]
-    Jadwalkan pembelian flash-sale presisi NTP."""
-    if not await guard(update): return
-    if len(ctx.args) < 3:
-        await update.message.reply_text(
-            "Pakai: /flashsale <link> <YYYY-MM-DD> <HH:MM:SS> [akun] [varian]\n"
-            "Contoh: /flashsale https://shopee.co.id/xxx 2026-07-01 20:00:00 akun1 Merah,L")
-        return
-    url = ctx.args[0]
-    dt_str = ctx.args[1] + " " + ctx.args[2]
-    acc = ctx.args[3] if len(ctx.args) > 3 else "akun1"
-    variant = ctx.args[4] if len(ctx.args) > 4 else None
-    try:
-        target_dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        await update.message.reply_text("Format waktu salah. Pakai: YYYY-MM-DD HH:MM:SS"); return
-    platform = detect_platform(url)
-    s = db(); t = Task(product_url=url, platform=platform, account_name=acc,
-                       variant=variant, mode="scheduled", run_at=target_dt)
-    s.add(t); s.commit(); tid = t.id; s.close()
-
-    target_epoch = target_dt.timestamp()
-    chat_id = update.effective_chat.id
-    async def job():
-        notifier = make_notifier(ctx.application, chat_id)
-        plat = get_platform(platform, acc, None, notifier)
-        await plat.run_flashsale(t, target_epoch)
-
-    scheduler.schedule_flashsale(target_dt, job, job_id=f"flash_{tid}", lead_sec=150)
-    # tampilkan estimasi offset NTP
-    timesync.sync()
-    await update.message.reply_text(
-        f"Flash-sale #{tid} dijadwalkan!\n"
-        f"Produk: {platform}\nWaktu target: {dt_str}\n"
-        f"Pre-warm mulai T-90s, hot-reload T-5s, tembak presisi di T0.\n"
-        f"NTP offset saat ini: {timesync.offset*1000:.1f} ms\n"
-        f"Pembayaran ikut /setpayment akun {acc}.")
-
+    await show_menu(update.message)
 
 def build_app():
     init_db()
     scheduler.start()
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("login", login))
-    app.add_handler(CommandHandler("logout", logout))
-    app.add_handler(CommandHandler("setpayment", setpayment))
-    app.add_handler(CommandHandler("flashsale", flashsale))
-    app.add_handler(CommandHandler("addproduct", addproduct))
-    app.add_handler(CommandHandler("list", list_tasks))
-    app.add_handler(CommandHandler("run", run_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return app
