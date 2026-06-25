@@ -249,5 +249,20 @@ class ShopeePlatform(BasePlatform):
                 dump = "(dump gagal)"
             await self.notify(f"Gagal pilih pembayaran: {e}\nTeks terlihat:\n{dump}", screenshot=True)
             raise
-        # === BERHENTI di sini: TIDAK klik 'Buat Pesanan' (user konfirmasi bayar manual) ===
+        # 5) Kembali ke halaman checkout -> klik 'Buat Pesanan'
+        #    (VA/Transfer Bank: ini hanya MEMBUAT pesanan + nomor VA, BUKAN memotong dana)
+        await self.page.wait_for_timeout(1500)
+        try:
+            await click_any(self.page, [
+                "button:has-text('Buat Pesanan')",
+                "button:has-text('Buat Pesanan'):not([disabled])",
+                "text=Buat Pesanan",
+                "button:has-text('Bayar Sekarang')",
+            ], timeout=8000, what="Buat Pesanan")
+            await self.page.wait_for_load_state("domcontentloaded")
+            await self.page.wait_for_timeout(2000)
+            await self.notify("✅ Pesanan dibuat! Cek nomor VA utk transfer (dana belum terpotong).", screenshot=True)
+        except Exception as e:
+            await self.notify(f"Gagal klik Buat Pesanan: {e}", screenshot=True)
+            raise
         return await self.page.inner_text("body")
