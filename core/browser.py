@@ -6,10 +6,27 @@ from utils.logger import get_logger
 
 log = get_logger()
 
+# Script anti-deteksi: sembunyikan jejak otomasi sebelum halaman dimuat
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['id-ID','id','en-US','en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+window.chrome = { runtime: {} };
+const _q = window.navigator.permissions && window.navigator.permissions.query;
+if (_q) {
+  window.navigator.permissions.query = (p) => (
+    p && p.name === 'notifications'
+      ? Promise.resolve({state: Notification.permission})
+      : _q(p)
+  );
+}
+"""
+
 class BrowserEngine:
-    """Persistent browser profile per akun.
-    Profil disimpan di sessions/<akun>_profile -> login STAY sampai user logout.
-    Tidak perlu login ulang tiap run (cookies, localStorage, token tersimpan)."""
+    """Persistent profile + anti-deteksi.
+    - Pakai Chrome asli (channel='chrome') bila ada -> lebih sulit dideteksi.
+    - Hilangkan flag '--enable-automation' (banner 'controlled by automated test').
+    - Inject STEALTH_JS sebelum tiap halaman."""
 
     def __init__(self, account: str, proxy: str | None = None):
         self.account = account
@@ -27,34 +44,55 @@ class BrowserEngine:
             "headless": HEADLESS if headless is None else headless,
             "slow_mo": SLOW_MO_MS,
             "locale": "id-ID",
+            "timezone_id": "Asia/Jakarta",
             "viewport": {"width": 1366, "height": 768},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "args": ["--disable-blink-features=AutomationControlled"],
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+            # buang switch yg bikin banner & mudah dideteksi
+            "ignore_default_args": ["--enable-automation"],
         }
         if self.proxy:
             kwargs["proxy"] = {"server": self.proxy}
-        # launch_persistent_context = profil tetap tersimpan di disk
-        self.context = await self._pw.chromium.launch_persistent_context(**kwargs)
+
+        # coba pakai Chrome asli dulu (lebih lolos anti-bot), fallback ke chromium
+        try:
+            self.context = await self._pw.chromium.launch_persistent_context(channel="chrome", **kwargs)
+            log.info(f"[{self.account}] pakai Chrome asli (channel=chrome)")
+        except Exception as e:
+            log.warning(f"Chrome asli gagal ({e}); fallback ke chromium bawaan")
+            self.context = await self._pw.chromium.launch_persistent_context(**kwargs)
+
+        # inject stealth ke semua halaman baru
+        await self.context.add_init_script(STEALTH_JS)
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
-        await stealth_async(self.page)
+        try:
+            await stealth_async(self.page)
+        except Exception:
+            pass
         log.info(f"[{self.account}] persistent profile loaded ({self.profile_dir})")
         return self.page
 
     async def new_page(self):
         p = await self.context.new_page()
-        await stealth_async(p)
+        try:
+            await stealth_async(p)
+        except Exception:
+            pass
         return p
 
     async def close(self):
-        # profil otomatis tersimpan ke disk -> login tetap ada di run berikutnya
         if self.context:
             await self.context.close()
         if self._pw:
             await self._pw.stop()
 
     def wipe_profile(self):
-        """Hapus profil = logout total."""
         import shutil
         if os.path.exists(self.profile_dir):
             shutil.rmtree(self.profile_dir, ignore_errors=True)
