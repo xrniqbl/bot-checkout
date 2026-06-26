@@ -77,65 +77,78 @@ class ShopeePlatform(BasePlatform):
         await self._maybe_captcha()
 
     async def buy_now(self, qty=1):
-        """Klik 'Beli Sekarang' -> WAJIB sampai URL /checkout. Tangani popup variasi.
-        Return True hanya jika benar2 pindah ke halaman checkout (cek URL, bukan teks
-        -- footer produk punya kata 'Metode Pembayaran' yg bikin false positive)."""
-        await self.page.wait_for_timeout(1000)
-        async def _click_beli():
-            for sel in ["button:has-text('Beli Sekarang')", "text=Beli Sekarang",
-                        "div[class*='product-briefing'] button:has-text('Beli')"]:
-                try:
-                    loc = self.page.locator(sel).first
-                    if await loc.count() > 0:
-                        try:
-                            await loc.scroll_into_view_if_needed(timeout=2500)
-                        except Exception:
-                            pass
-                        await loc.click(timeout=4000, force=True)
-                        log.info(f"klik Beli Sekarang via: {sel}")
+        """Klik 'Beli Sekarang' dgn beberapa strategi (normal -> JS click) lalu WAJIB
+        sampai URL /checkout. Tangani drawer variasi bila muncul."""
+        await self.page.wait_for_load_state("domcontentloaded")
+        await self.page.wait_for_timeout(2000)
+
+        async def _click_beli(where="utama"):
+            # cari SEMUA tombol Beli Sekarang yg terlihat, klik yg paling relevan
+            try:
+                btns = self.page.locator("button:has-text('Beli Sekarang'), div[role='button']:has-text('Beli Sekarang')")
+                n = await btns.count()
+                log.info(f"ditemukan {n} tombol 'Beli Sekarang' ({where})")
+                for i in range(n):
+                    b = btns.nth(i)
+                    try:
+                        if not await b.is_visible():
+                            continue
+                        await b.scroll_into_view_if_needed(timeout=2000)
+                        await b.click(timeout=3500)
+                        log.info(f"klik Beli Sekarang (normal) idx={i}")
                         return True
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
+            except Exception as ex:
+                log.warning(f"locate beli error: {ex}")
+            # fallback: JS click langsung ke elemen DOM
+            try:
+                done = await self.page.evaluate("""() => {
+                    const els=[...document.querySelectorAll("button,div[role='button'],a")];
+                    const t=els.find(el=>/beli sekarang/i.test((el.innerText||'')) && el.offsetParent!==null);
+                    if(t){ t.click(); return true; } return false;
+                }""")
+                if done:
+                    log.info("klik Beli Sekarang (JS click)")
+                    return True
+            except Exception as ex:
+                log.warning(f"JS click error: {ex}")
             return False
 
-        if not await _click_beli():
-            log.warning("tombol 'Beli Sekarang' tidak ketemu")
+        if not await _click_beli("utama"):
+            log.warning("tombol 'Beli Sekarang' tidak bisa diklik")
             return False
-        await self.page.wait_for_timeout(1500)
+        await self.page.wait_for_timeout(2500)
 
-        # cek apakah muncul popup variasi (mis 'Silakan pilih variasi')
-        try:
-            body = (await self.page.inner_text("body")).lower()
-            if "pilih variasi" in body or "silakan pilih" in body:
-                log.info("popup variasi muncul -> pilih opsi pertama")
-                # pilih opsi variasi pertama yg tersedia
-                try:
-                    opt = self.page.locator("button[class*='product-variation']:not([disabled])").first
-                    if await opt.count() > 0:
-                        await opt.click(timeout=2500)
-                        await self.page.wait_for_timeout(600)
-                except Exception:
-                    pass
-                # klik Beli Sekarang konfirmasi di popup
-                await _click_beli()
-        except Exception:
-            pass
+        # bila masih di produk -> mungkin muncul drawer variasi/konfirmasi
+        if "/checkout" not in self.page.url.lower():
+            try:
+                # pilih opsi variasi pertama yg tersedia (bila ada)
+                opt = self.page.locator("button[class*='product-variation']:not([class*='disabled'])").first
+                if await opt.count() > 0 and await opt.is_visible():
+                    await opt.click(timeout=2500)
+                    log.info("pilih variasi pertama di drawer")
+                    await self.page.wait_for_timeout(800)
+            except Exception:
+                pass
+            # klik konfirmasi Beli Sekarang di drawer
+            await _click_beli("drawer")
+            await self.page.wait_for_timeout(2000)
 
-        # tunggu navigasi ke /checkout (KETAT)
+        # tunggu navigasi ke /checkout
         try:
-            await self.page.wait_for_url("**/checkout**", timeout=12000)
+            await self.page.wait_for_url("**/checkout**", timeout=10000)
         except Exception:
-            await self.page.wait_for_timeout(2500)
+            await self.page.wait_for_timeout(2000)
         url = self.page.url
         ok = "/checkout" in url.lower()
         log.info(f"buy_now sampai checkout: {ok} (url={url})")
         if not ok:
-            # diagnosa: apa yg terlihat setelah klik Beli Sekarang
             try:
                 dump = await self.page.evaluate("""() => {
                     const out=[]; document.querySelectorAll("button,div[role='button'],a").forEach(el=>{
                         const t=(el.innerText||'').trim();
-                        if(t && t.length<35 && /beli|keranjang|checkout|variasi|pilih|login|masuk/i.test(t)) out.push(t);
+                        if(t && t.length<35 && el.offsetParent!==null && /beli|keranjang|checkout|variasi|pilih|masuk|login|tambah/i.test(t)) out.push(t);
                     }); return [...new Set(out)].slice(0,25).join(' | ');
                 }""")
             except Exception:
