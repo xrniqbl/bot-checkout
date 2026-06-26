@@ -1,6 +1,8 @@
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup)
 from telegram.constants import ParseMode
+import asyncio
+from core.stock_monitor import StockMonitor
 from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
                           CallbackQueryHandler, ContextTypes, filters)
 import io
@@ -46,6 +48,7 @@ def main_menu():
          InlineKeyboardButton("🚪 Logout", callback_data="m:logout")],
         [InlineKeyboardButton("💳 Atur Pembayaran", callback_data="m:pay"),
          InlineKeyboardButton("⚡ Flash Sale", callback_data="m:flash")],
+        [InlineKeyboardButton("🔔 Monitor Stok (Semi-Auto)", callback_data="m:watch")],
         [InlineKeyboardButton("❓ Bantuan", callback_data="m:help")],
     ])
 
@@ -126,6 +129,24 @@ async def on_button(update: Update, ctx):
         await q.edit_message_text(
             "⚡ <b>Flash Sale Terjadwal</b>\nKirim <b>link produk</b> dulu:",
             parse_mode=ParseMode.HTML, reply_markup=back_btn())
+    elif data == "m:watch":
+        ctx.user_data["await"] = "watch_link"
+        await q.edit_message_text(
+            "🔔 <b>Monitor Stok (Semi-Otomatis)</b>\n\n"
+            "Bot memantau stok lewat data publik (aman, tidak memicu anti-bot).\n"
+            "Begitu stok tersedia, kamu dapat <b>notif instan + tombol Buka Checkout</b> "
+            "untuk checkout sendiri di browser/app Shopee-mu.\n\n"
+            "📎 Kirim <b>link produk Shopee</b> yang mau dipantau:",
+            parse_mode=ParseMode.HTML, reply_markup=back_btn())
+    elif data == "m:watch:stop":
+        tasks = ctx.application.bot_data.get("watch_tasks", {})
+        mon = tasks.pop(q.message.chat_id, None)
+        if mon:
+            try: mon["monitor"].stop(); mon["task"].cancel()
+            except Exception: pass
+            await q.edit_message_text("🛑 Monitor stok dihentikan.", reply_markup=back_btn())
+        else:
+            await q.edit_message_text("Tidak ada monitor aktif.", reply_markup=back_btn())
     elif data == "m:help":
         await q.edit_message_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=back_btn())
     elif data == "m:home":
@@ -289,6 +310,59 @@ async def on_text(update: Update, ctx):
             chat_id=update.effective_chat.id, message_id=status.message_id,
             text=(f"{'✅' if ok else '⚠️'} {msg}\n({n} cookie dimuat)"),
             reply_markup=main_menu())
+    elif state == "watch_link":
+        ctx.user_data.pop("await", None)
+        url = text
+        platform = detect_platform(url)
+        if platform != "shopee":
+            await update.message.reply_text(
+                "⚠️ Untuk saat ini monitor semi-otomatis hanya mendukung <b>Shopee</b>.",
+                parse_mode=ParseMode.HTML, reply_markup=main_menu())
+            return
+        chat_id = update.effective_chat.id
+        app = ctx.application
+        already = app.bot_data.setdefault("watch_tasks", {})
+        # hentikan monitor lama di chat ini kalau ada
+        old = already.pop(chat_id, None)
+        if old:
+            try: old["monitor"].stop(); old["task"].cancel()
+            except Exception: pass
+
+        async def on_restock(info):
+            if info.get("stock", 0) == 0:
+                return
+            if info.get("note") == "platform_unsupported":
+                await app.bot.send_message(chat_id,
+                    "⚠️ Tidak bisa membaca stok produk ini (format tidak didukung).",
+                    reply_markup=main_menu())
+                return
+            harga = f"Rp{info['price']:,.0f}".replace(",", ".") if info.get("price") else "-"
+            flash = "⚡ FLASH SALE\n" if info.get("flash") else ""
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛒 Buka Checkout Sekarang", url=url)],
+                [InlineKeyboardButton("🛑 Stop Monitor", callback_data="m:watch:stop")],
+            ])
+            await app.bot.send_message(chat_id,
+                f"🔔 <b>STOK TERSEDIA!</b>\n{flash}"
+                f"📦 {info.get('name','Produk')}\n"
+                f"💰 {harga}\n"
+                f"📊 Sisa stok: <b>{info['stock']}</b>\n\n"
+                f"👆 Tap tombol di bawah untuk checkout sendiri (di app/browser kamu).",
+                parse_mode=ParseMode.HTML, reply_markup=kb)
+
+        monitor = StockMonitor(url, on_restock, interval=8, jitter=4)
+        task = asyncio.create_task(monitor.start(max_minutes=720))
+        already[chat_id] = {"monitor": monitor, "task": task, "url": url}
+        await update.message.reply_text(
+            "✅ <b>Monitor stok aktif!</b>\n"
+            "🔍 Bot memantau lewat data publik (aman dari anti-bot).\n"
+            "🔔 Kamu akan dapat notif + tombol checkout begitu stok tersedia.\n\n"
+            "Tekan 🛑 Stop kapan saja dari notif, atau menu.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛑 Stop Monitor", callback_data="m:watch:stop")],
+                [InlineKeyboardButton("⬅️ Menu Utama", callback_data="m:home")],
+            ]))
     else:
         # teks acak -> tampilkan menu
         await show_menu(update.message)

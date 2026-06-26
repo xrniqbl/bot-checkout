@@ -1,0 +1,106 @@
+import re
+import asyncio
+import random
+import httpx
+from utils.logger import get_logger
+
+log = get_logger()
+
+# Pola URL produk Shopee: /product/{shop_id}/{item_id} atau ...-i.{shop_id}.{item_id}
+_SHOPEE_A = re.compile(r"/product/(\d+)/(\d+)")
+_SHOPEE_B = re.compile(r"-i\.(\d+)\.(\d+)")
+
+# Header se-natural mungkin (meniru browser) untuk endpoint publik
+_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "application/json",
+    "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+    "Referer": "https://shopee.co.id/",
+    "x-api-source": "pc",
+    "x-shopee-language": "id",
+}
+
+
+def parse_shopee_ids(url: str):
+    """Ekstrak (shop_id, item_id) dari URL produk Shopee. None kalau bukan Shopee."""
+    m = _SHOPEE_A.search(url) or _SHOPEE_B.search(url)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+async def fetch_shopee_stock(client: httpx.AsyncClient, shop_id: int, item_id: int):
+    """Ambil status stok via endpoint publik. Return dict ringkas atau None."""
+    api = f"https://shopee.co.id/api/v4/pdp/get_pc?item_id={item_id}&shop_id={shop_id}"
+    try:
+        r = await client.get(api, headers=_HEADERS, timeout=10)
+        if r.status_code != 200:
+            log.debug(f"stock api status {r.status_code}")
+            return None
+        data = r.json()
+    except Exception as e:
+        log.debug(f"stock api error: {e}")
+        return None
+
+    item = (((data or {}).get("data") or {}).get("item")) or {}
+    if not item:
+        return None
+    stock = item.get("stock", 0) or 0
+    name = item.get("title") or item.get("name") or "Produk"
+    price = (item.get("price") or 0) / 100000  # Shopee price = *100000
+    # cek varian (model) yg punya stok
+    models = item.get("models") or []
+    model_stock = sum((mm.get("stock", 0) or 0) for mm in models) if models else 0
+    total = max(stock, model_stock)
+    # flash sale?
+    flash = bool(item.get("flash_sale") or item.get("is_flash_sale"))
+    return {"name": name, "stock": total, "price": price, "flash": flash}
+
+
+class StockMonitor:
+    """Monitor stok SEMI-OTOMATIS.
+
+    - Polling endpoint publik (ringan, tidak memicu flag crawler checkout).
+    - Saat stok TERSEDIA (transisi 0 -> >0), panggil on_restock(info) sekali.
+    - Tidak melakukan checkout otomatis: hanya memberi sinyal untuk notifikasi.
+    """
+
+    def __init__(self, url: str, on_restock, interval=8, jitter=4):
+        self.url = url
+        self.on_restock = on_restock          # async callback(info: dict)
+        self.interval = interval              # detik antar cek
+        self.jitter = jitter                  # variasi acak biar tidak seragam
+        self._running = False
+
+    async def start(self, max_minutes=720):
+        self._running = True
+        ids = parse_shopee_ids(self.url)
+        if not ids:
+            log.warning("StockMonitor: hanya Shopee yang didukung endpoint publik saat ini.")
+            await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
+                                   "flash": False, "note": "platform_unsupported"})
+            return
+        shop_id, item_id = ids
+        last_in_stock = None
+        loops = int((max_minutes * 60) / max(self.interval, 1))
+        async with httpx.AsyncClient(http2=True, follow_redirects=True) as client:
+            for _ in range(loops):
+                if not self._running:
+                    break
+                info = await fetch_shopee_stock(client, shop_id, item_id)
+                if info is not None:
+                    in_stock = info["stock"] > 0
+                    # trigger HANYA saat transisi habis -> ada
+                    if in_stock and last_in_stock is False:
+                        log.info(f"RESTOCK terdeteksi: {info}")
+                        await self.on_restock(info)
+                    # trigger juga di cek pertama kalau sudah ada stok
+                    if in_stock and last_in_stock is None:
+                        await self.on_restock(info)
+                    last_in_stock = in_stock
+                await asyncio.sleep(self.interval + random.uniform(0, self.jitter))
+
+    def stop(self):
+        self._running = False
