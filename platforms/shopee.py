@@ -101,6 +101,27 @@ class ShopeePlatform(BasePlatform):
                         continue
             except Exception as ex:
                 log.warning(f"locate beli error: {ex}")
+            # strategi 2: klik MOUSE ASLI di koordinat tombol (gerakan manusiawi)
+            try:
+                b = self.page.locator("button:has-text('Beli Sekarang')").first
+                if await b.count() > 0:
+                    await b.scroll_into_view_if_needed(timeout=2000)
+                    box = await b.bounding_box()
+                    if box:
+                        cx = box["x"] + box["width"]/2
+                        cy = box["y"] + box["height"]/2
+                        # gerak bertahap (human-like)
+                        await self.page.mouse.move(cx-40, cy-15, steps=8)
+                        await self.page.wait_for_timeout(120)
+                        await self.page.mouse.move(cx, cy, steps=6)
+                        await self.page.wait_for_timeout(80)
+                        await self.page.mouse.down()
+                        await self.page.wait_for_timeout(60)
+                        await self.page.mouse.up()
+                        log.info("klik Beli Sekarang (mouse asli)")
+                        return True
+            except Exception as ex:
+                log.warning(f"mouse click error: {ex}")
             # fallback: JS click langsung ke elemen DOM
             try:
                 done = await self.page.evaluate("""() => {
