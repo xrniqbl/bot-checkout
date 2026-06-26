@@ -175,7 +175,10 @@ class StockMonitor:
         shop_id, item_id = ids
         last_in_stock = None
         loops = int((max_minutes * 60) / max(self.interval, 1))
-        async with httpx.AsyncClient(http2=True, follow_redirects=True) as client:
+        # client httpx HANYA dibuat kalau tidak ada page (fallback). Tanpa http2
+        # supaya tidak butuh paket 'h2'.
+        client = None if self.page is not None else httpx.AsyncClient(follow_redirects=True)
+        try:
             first = True
             for _ in range(loops):
                 if not self._running:
@@ -219,6 +222,9 @@ class StockMonitor:
                         await self.on_restock(info)
                     last_in_stock = in_stock
                 await asyncio.sleep(self.interval + random.uniform(0, self.jitter))
+        finally:
+            if client is not None:
+                await client.aclose()
 
     def stop(self):
         self._running = False
