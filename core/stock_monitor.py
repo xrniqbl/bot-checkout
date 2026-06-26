@@ -115,6 +115,49 @@ async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
     return last or {"_error": "tidak ada endpoint berhasil"}
 
 
+async def fetch_shopee_stock_via_dom(page, url: str):
+    """PLAN C: baca status stok dari TAMPILAN halaman produk (DOM) di Chrome login.
+    Tidak menyentuh API -> paling tahan anti-bot. Sinyal:
+    - 'Stok Habis'/'Sold Out' -> stok 0
+    - ada tombol Beli/Keranjang aktif -> tersedia
+    - angka 'Tersisa N'/'Stok N' kalau ada."""
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        return {"_error": f"goto: {e}"}
+    await page.wait_for_timeout(2500)
+    cur = (page.url or "").lower()
+    if "/verify/" in cur or "anti_bot" in cur:
+        return {"_error": "captcha (halaman produk diblok, solve manual di Chrome)"}
+    js = r'''
+    () => {
+      const txt = document.body ? document.body.innerText : "";
+      const habis = /stok habis|sold out|habis terjual|produk tidak ditemukan|tidak tersedia/i.test(txt);
+      const btns = Array.from(document.querySelectorAll('button'));
+      const buy = btns.find(b => /beli sekarang|masukkan keranjang|tambah ke keranjang|add to cart|buy now/i.test((b.innerText||'')));
+      const buyEnabled = buy ? !buy.disabled : false;
+      let stockNum = null;
+      const m = txt.match(/(?:tersisa|stok)\s*:?\s*(\d+)/i);
+      if (m) stockNum = parseInt(m[1]);
+      const h1 = document.querySelector('h1');
+      const name = h1 ? h1.innerText.trim() : (document.title||'Produk');
+      return {habis, buyEnabled, stockNum, name, hasBuy: !!buy};
+    }
+    '''
+    try:
+        r = await page.evaluate(js)
+    except Exception as e:
+        return {"_error": f"dom eval: {e}"}
+    if not r:
+        return {"_error": "dom kosong"}
+    name = r.get("name") or "Produk"
+    if r.get("habis"):
+        return {"name": name, "stock": 0, "price": 0, "flash": False}
+    in_stock = bool(r.get("buyEnabled")) or (r.get("stockNum") or 0) > 0 or bool(r.get("hasBuy"))
+    stock = r.get("stockNum") if r.get("stockNum") else (1 if in_stock else 0)
+    return {"name": name, "stock": stock, "price": 0, "flash": False}
+
+
 async def resolve_shopee_url(page, url: str):
     """Resolve link pendek/share Shopee (s.shopee.co.id, shp.ee, dst) jadi URL
     asli yg memuat shop_id/item_id. Pakai fetch dari konteks login (ikut redirect)."""
@@ -155,7 +198,7 @@ class StockMonitor:
     - Tidak melakukan checkout otomatis: hanya memberi sinyal untuk notifikasi.
     """
 
-    def __init__(self, url: str, on_restock, interval=8, jitter=4, page=None):
+    def __init__(self, url: str, on_restock, interval=20, jitter=8, page=None):
         self.url = url
         self.on_restock = on_restock          # async callback(info: dict)
         self.interval = interval              # detik antar cek
@@ -185,7 +228,7 @@ class StockMonitor:
                     break
                 try:
                     if self.page is not None:
-                        info = await fetch_shopee_stock_via_page(self.page, shop_id, item_id)
+                        info = await fetch_shopee_stock_via_dom(self.page, self.url)
                     else:
                         info = await fetch_shopee_stock(client, shop_id, item_id)
                 except Exception as e:
