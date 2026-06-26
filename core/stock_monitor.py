@@ -116,19 +116,27 @@ async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
 
 
 async def fetch_shopee_stock_via_dom(page, url: str):
-    """PLAN C: baca status stok dari TAMPILAN halaman produk (DOM) di Chrome login.
-    Tidak menyentuh API -> paling tahan anti-bot. Sinyal:
-    - 'Stok Habis'/'Sold Out' -> stok 0
-    - ada tombol Beli/Keranjang aktif -> tersedia
-    - angka 'Tersisa N'/'Stok N' kalau ada."""
+    """PLAN C (gentle): baca stok dari DOM TANPA menabrak captcha berulang.
+    - Kalau halaman lagi di captcha -> minta solve manual (tidak goto paksa).
+    - Kalau belum di halaman produk -> goto sekali.
+    - Kalau sudah di produk -> reload lembut untuk data terbaru."""
+    import re as _re
+    cur = (page.url or "").lower()
+    on_captcha = ("/verify/" in cur) or ("anti_bot" in cur)
+    on_product = ("/product/" in cur) or bool(_re.search(r"i\.\d+\.\d+", cur))
+    if on_captcha:
+        return {"_error": "captcha_manual"}
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        if on_product:
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+        else:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
-        return {"_error": f"goto: {e}"}
+        return {"_error": f"nav: {e}"}
     await page.wait_for_timeout(2500)
     cur = (page.url or "").lower()
-    if "/verify/" in cur or "anti_bot" in cur:
-        return {"_error": "captcha (halaman produk diblok, solve manual di Chrome)"}
+    if ("/verify/" in cur) or ("anti_bot" in cur):
+        return {"_error": "captcha_manual"}
     js = r'''
     () => {
       const txt = document.body ? document.body.innerText : "";
