@@ -26,16 +26,69 @@ class ShopeePlatform(BasePlatform):
         return await exists(self.page, self.LOGIN_INDICATORS, timeout=4000)
 
     async def open_product(self, url):
-        await self.page.goto(url, wait_until="domcontentloaded")
-        await first_visible(self.page, self.ADD_CART + self.BUY_NOW, timeout=8000)
+        import random
+        # NAVIGASI MANUSIAWI: jangan goto langsung ke URL produk (=sinyal crawler_item).
+        # Buka homepage dulu -> jeda acak -> baru ke produk dgn referer homepage.
+        try:
+            if "/checkout" not in self.page.url and "shopee.co.id" not in self.page.url:
+                await self.page.goto(self.HOME, wait_until="domcontentloaded", timeout=45000)
+                await self.page.wait_for_timeout(random.randint(1500, 3000))
+                # sedikit gerak mouse + scroll (perilaku manusia)
+                try:
+                    await self.page.mouse.move(random.randint(200, 800), random.randint(150, 500), steps=10)
+                    await self.page.mouse.wheel(0, random.randint(300, 700))
+                    await self.page.wait_for_timeout(random.randint(800, 1600))
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"homepage warmup: {e}")
+        # ke produk dgn referer homepage (seolah klik dari Shopee)
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded",
+                                 referer=self.HOME, timeout=45000)
+        except Exception:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await self.page.wait_for_timeout(random.randint(1200, 2500))
         await self._maybe_captcha()
+        await first_visible(self.page, self.ADD_CART + self.BUY_NOW, timeout=10000)
 
-    async def _maybe_captcha(self):
-        # deteksi CAPTCHA -> minta user solve manual via Telegram (jangan auto-fail)
-        if await exists(self.page, ["iframe[src*='captcha']", "text=Verifikasi", "text=puzzle"], timeout=800):
-            await self.notify("CAPTCHA Shopee muncul! Selesaikan manual di browser (non-headless).", screenshot=True)
-            # beri waktu user solve
-            await self.page.wait_for_timeout(30000)
+    async def _maybe_captcha(self, wait_sec=150):
+        """Deteksi halaman anti-bot/captcha Shopee. Karena Chrome (mode CDP) TERLIHAT,
+        minta user solve manual di jendela itu, lalu polling sampai lolos."""
+        import asyncio
+        def _is_captcha():
+            u = (self.page.url or "").lower()
+            return ("/verify/captcha" in u) or ("/verify/traffic" in u) or ("anti_bot" in u)
+        # cek via URL atau elemen
+        hit = _is_captcha()
+        if not hit:
+            try:
+                hit = await exists(self.page, ["iframe[src*='captcha']", "text=Terjadi Kesalahan",
+                                               "button:has-text('Coba Lagi')", "text=Verifikasi"], timeout=800)
+            except Exception:
+                hit = False
+        if not hit:
+            return True
+        await self.notify("🛑 Anti-bot/CAPTCHA Shopee muncul!\n"
+                          "Selesaikan VERIFIKASI manual di jendela Chrome sekarang.\n"
+                          f"Bot menunggu sampai {wait_sec} detik...", screenshot=True)
+        # coba klik 'Coba Lagi' sekali (kadang cukup)
+        try:
+            btn = self.page.locator("button:has-text('Coba Lagi')").first
+            if await btn.count() > 0:
+                await btn.click(timeout=2000)
+                await self.page.wait_for_timeout(2000)
+        except Exception:
+            pass
+        # polling sampai user menyelesaikan (URL keluar dari captcha)
+        for _ in range(wait_sec // 3):
+            await asyncio.sleep(3)
+            if not _is_captcha():
+                await self.notify("✅ Verifikasi selesai, melanjutkan...")
+                await self.page.wait_for_timeout(1500)
+                return True
+        await self.notify("⏳ Verifikasi belum selesai (timeout).")
+        return False
 
     async def is_in_stock(self):
         if await exists(self.page, self.OOS, timeout=1000):
