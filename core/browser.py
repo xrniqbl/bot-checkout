@@ -54,7 +54,7 @@ class BrowserEngine:
             pages = self.context.pages
             self.page = pages[0] if pages else await self.context.new_page()
             log.info(f"[{self.account}] ATTACH ke Chrome asli via CDP: {CHROME_CDP_URL}")
-            return
+            return self.page
         self._cdp = False
         kwargs = {
             "user_data_dir": self.profile_dir,
