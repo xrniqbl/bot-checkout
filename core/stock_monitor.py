@@ -161,7 +161,8 @@ async def fetch_shopee_stock_via_dom(page, url: str):
     name = r.get("name") or "Produk"
     if r.get("habis"):
         return {"name": name, "stock": 0, "price": 0, "flash": False}
-    in_stock = bool(r.get("buyEnabled")) or (r.get("stockNum") or 0) > 0 or bool(r.get("hasBuy"))
+    # akurat: tersedia HANYA jika tombol beli AKTIF atau angka stok > 0
+    in_stock = bool(r.get("buyEnabled")) or (r.get("stockNum") or 0) > 0
     stock = r.get("stockNum") if r.get("stockNum") else (1 if in_stock else 0)
     return {"name": name, "stock": stock, "price": 0, "flash": False}
 
