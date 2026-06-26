@@ -60,42 +60,59 @@ async def fetch_shopee_stock(client: httpx.AsyncClient, shop_id: int, item_id: i
 
 
 async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
-    """Ambil stok lewat KONTEKS HALAMAN Chrome (CDP) yang sudah login.
-    Request dijalankan dari dalam shopee.co.id -> membawa cookie + token sesi,
-    sehingga lolos anti-bot 403 yang menimpa httpx polos."""
-    api = f"https://shopee.co.id/api/v4/pdp/get_pc?item_id={item_id}&shop_id={shop_id}"
+    """Baca stok lewat KONTEKS Chrome (CDP) login. Coba 2 endpoint, parse beberapa
+    bentuk JSON, dan SELALU kembalikan diagnosa (tidak pernah None diam-diam)."""
+    apis = [
+        f"https://shopee.co.id/api/v4/pdp/get_pc?item_id={item_id}&shop_id={shop_id}",
+        f"https://shopee.co.id/api/v4/item/get?itemid={item_id}&shopid={shop_id}",
+    ]
     js = """
     async (url) => {
         try {
             const r = await fetch(url, {
-                headers: {"x-api-source": "pc", "x-shopee-language": "id"},
+                headers: {"x-api-source":"pc","x-shopee-language":"id","af-ac-enc-dat":""},
                 credentials: "include"
             });
-            if (!r.ok) return {ok:false, status:r.status};
-            const j = await r.json();
-            return {ok:true, data:j};
-        } catch (e) { return {ok:false, error:String(e)}; }
+            const t = await r.text();
+            return {status: r.status, body: t.slice(0, 4000)};
+        } catch (e) { return {status: -1, body: String(e)}; }
     }
     """
-    try:
-        res = await page.evaluate(js, api)
-    except Exception as e:
-        log.warning(f"via_page evaluate error: {e}")
-        return {"_error": f"evaluate: {e}"}
-    if not res or not res.get("ok"):
-        log.warning(f"via_page gagal: {res}")
-        return {"_error": f"http {res.get('status') if res else '??'}"}
-    item = (((res.get("data") or {}).get("data") or {}).get("item")) or {}
-    if not item:
-        return None
-    stock = item.get("stock", 0) or 0
-    name = item.get("title") or item.get("name") or "Produk"
-    price = (item.get("price") or 0) / 100000
-    models = item.get("models") or []
-    model_stock = sum((mm.get("stock", 0) or 0) for mm in models) if models else 0
-    total = max(stock, model_stock)
-    flash = bool(item.get("flash_sale") or item.get("is_flash_sale"))
-    return {"name": name, "stock": total, "price": price, "flash": flash}
+    last = None
+    for api in apis:
+        try:
+            res = await page.evaluate(js, api)
+        except Exception as e:
+            log.warning(f"via_page evaluate error: {e}")
+            last = {"_error": f"evaluate: {e}"}
+            continue
+        status = res.get("status") if res else "??"
+        if status != 200:
+            last = {"_error": f"http {status}"}
+            log.warning(f"via_page {api} -> http {status}")
+            continue
+        # coba parse JSON
+        import json as _json
+        try:
+            data = _json.loads(res.get("body") or "{}")
+        except Exception:
+            last = {"_error": f"json parse gagal (status 200)"}
+            continue
+        # bentuk get_pc: data.item.* ; bentuk item/get: data.*
+        item = (((data or {}).get("data") or {}).get("item")) or ((data or {}).get("data")) or {}
+        if not isinstance(item, dict) or not item:
+            last = {"_error": f"item kosong (mungkin login/region). keys={list((data or {}).keys())}"}
+            log.warning(f"via_page item kosong: {str(data)[:200]}")
+            continue
+        stock = item.get("stock", 0) or 0
+        name = item.get("title") or item.get("name") or "Produk"
+        price = (item.get("price") or item.get("price_min") or 0) / 100000
+        models = item.get("models") or []
+        model_stock = sum((mm.get("stock", 0) or 0) for mm in models) if models else 0
+        total = max(stock, model_stock)
+        flash = bool(item.get("flash_sale") or item.get("is_flash_sale"))
+        return {"name": name, "stock": total, "price": price, "flash": flash}
+    return last or {"_error": "tidak ada endpoint berhasil"}
 
 
 async def resolve_shopee_url(page, url: str):
