@@ -8,7 +8,7 @@ log = get_logger()
 
 # Pola URL produk Shopee: /product/{shop_id}/{item_id} atau ...-i.{shop_id}.{item_id}
 _SHOPEE_A = re.compile(r"/product/(\d+)/(\d+)")
-_SHOPEE_B = re.compile(r"-i\.(\d+)\.(\d+)")
+_SHOPEE_B = re.compile(r"i\.(\d+)\.(\d+)")
 
 # Header se-natural mungkin (meniru browser) untuk endpoint publik
 _HEADERS = {
@@ -98,6 +98,38 @@ async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
     return {"name": name, "stock": total, "price": price, "flash": flash}
 
 
+async def resolve_shopee_url(page, url: str):
+    """Resolve link pendek/share Shopee (s.shopee.co.id, shp.ee, dst) jadi URL
+    asli yg memuat shop_id/item_id. Pakai fetch dari konteks login (ikut redirect)."""
+    ids = parse_shopee_ids(url)
+    if ids:
+        return url, ids
+    if page is None:
+        return url, None
+    js = "async (u) => { try { const r = await fetch(u, {credentials:'include'}); return r.url; } catch(e){ return ''; } }"
+    try:
+        final = await page.evaluate(js, url)
+    except Exception as e:
+        log.debug(f"resolve fetch error: {e}")
+        final = ""
+    if final:
+        ids = parse_shopee_ids(final)
+        if ids:
+            log.info(f"link resolve: {url} -> {final}")
+            return final, ids
+    # fallback: navigasi langsung lalu baca URL akhir
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        final = page.url
+        ids = parse_shopee_ids(final)
+        if ids:
+            log.info(f"link resolve (goto): {final}")
+            return final, ids
+    except Exception as e:
+        log.debug(f"resolve goto error: {e}")
+    return url, None
+
+
 class StockMonitor:
     """Monitor stok SEMI-OTOMATIS.
 
@@ -116,12 +148,13 @@ class StockMonitor:
 
     async def start(self, max_minutes=720):
         self._running = True
-        ids = parse_shopee_ids(self.url)
+        resolved_url, ids = await resolve_shopee_url(self.page, self.url)
         if not ids:
-            log.warning("StockMonitor: hanya Shopee yang didukung endpoint publik saat ini.")
+            log.warning(f"StockMonitor: tidak bisa baca ID dari link: {self.url}")
             await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
-                                   "flash": False, "note": "platform_unsupported"})
+                                   "flash": False, "note": "unsupported_link"})
             return
+        self.url = resolved_url
         shop_id, item_id = ids
         last_in_stock = None
         loops = int((max_minutes * 60) / max(self.interval, 1))

@@ -336,9 +336,11 @@ async def on_text(update: Update, ctx):
         async def on_restock(info):
             if info.get("stock", 0) == 0:
                 return
-            if info.get("note") == "platform_unsupported":
+            if info.get("note") in ("platform_unsupported", "unsupported_link"):
                 await app.bot.send_message(chat_id,
-                    "⚠️ Tidak bisa membaca stok produk ini (format tidak didukung).",
+                    "⚠️ Tidak bisa membaca ID produk dari link ini.\n"
+                    "Kirim link produk Shopee yang LENGKAP (mengandung .../product/<id>/<id> "
+                    "atau ...-i.<id>.<id>), atau coba link 'Salin Tautan' dari app Shopee.",
                     reply_markup=main_menu())
                 return
             harga = f"Rp{info['price']:,.0f}".replace(",", ".") if info.get("price") else "-"
