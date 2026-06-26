@@ -180,22 +180,33 @@ class StockMonitor:
             for _ in range(loops):
                 if not self._running:
                     break
-                if self.page is not None:
-                    info = await fetch_shopee_stock_via_page(self.page, shop_id, item_id)
-                else:
-                    info = await fetch_shopee_stock(client, shop_id, item_id)
+                try:
+                    if self.page is not None:
+                        info = await fetch_shopee_stock_via_page(self.page, shop_id, item_id)
+                    else:
+                        info = await fetch_shopee_stock(client, shop_id, item_id)
+                except Exception as e:
+                    log.exception(f"fetch error: {e}")
+                    info = {"_error": f"exception: {e}"}
+                log.info(f"[poll] info={info}")
                 # diagnosa kegagalan baca stok
                 if info is not None and info.get("_error"):
                     if first:
-                        await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
-                                               "flash": False, "note": "read_failed",
-                                               "detail": info.get("_error")})
+                        try:
+                            await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
+                                                   "flash": False, "note": "read_failed",
+                                                   "detail": info.get("_error")})
+                        except Exception as e:
+                            log.exception(f"on_restock(read_failed) error: {e}")
                     first = False
                     await asyncio.sleep(self.interval + random.uniform(0, self.jitter))
                     continue
                 # self-check pertama: lapor stok awal walau belum restock
                 if first and info is not None:
-                    await self.on_restock({**info, "note": "initial"})
+                    try:
+                        await self.on_restock({**info, "note": "initial"})
+                    except Exception as e:
+                        log.exception(f"on_restock(initial) error: {e}")
                     first = False
                 if info is not None and not info.get("_error"):
                     in_stock = info["stock"] > 0
