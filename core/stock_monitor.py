@@ -80,11 +80,11 @@ async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
     try:
         res = await page.evaluate(js, api)
     except Exception as e:
-        log.debug(f"via_page evaluate error: {e}")
-        return None
+        log.warning(f"via_page evaluate error: {e}")
+        return {"_error": f"evaluate: {e}"}
     if not res or not res.get("ok"):
-        log.debug(f"via_page gagal: {res}")
-        return None
+        log.warning(f"via_page gagal: {res}")
+        return {"_error": f"http {res.get('status') if res else '??'}"}
     item = (((res.get("data") or {}).get("data") or {}).get("item")) or {}
     if not item:
         return None
@@ -159,6 +159,7 @@ class StockMonitor:
         last_in_stock = None
         loops = int((max_minutes * 60) / max(self.interval, 1))
         async with httpx.AsyncClient(http2=True, follow_redirects=True) as client:
+            first = True
             for _ in range(loops):
                 if not self._running:
                     break
@@ -166,7 +167,20 @@ class StockMonitor:
                     info = await fetch_shopee_stock_via_page(self.page, shop_id, item_id)
                 else:
                     info = await fetch_shopee_stock(client, shop_id, item_id)
-                if info is not None:
+                # diagnosa kegagalan baca stok
+                if info is not None and info.get("_error"):
+                    if first:
+                        await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
+                                               "flash": False, "note": "read_failed",
+                                               "detail": info.get("_error")})
+                    first = False
+                    await asyncio.sleep(self.interval + random.uniform(0, self.jitter))
+                    continue
+                # self-check pertama: lapor stok awal walau belum restock
+                if first and info is not None:
+                    await self.on_restock({**info, "note": "initial"})
+                    first = False
+                if info is not None and not info.get("_error"):
                     in_stock = info["stock"] > 0
                     # trigger HANYA saat transisi habis -> ada
                     if in_stock and last_in_stock is False:

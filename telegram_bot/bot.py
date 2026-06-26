@@ -334,14 +334,33 @@ async def on_text(update: Update, ctx):
             except Exception: pass
 
         async def on_restock(info):
-            if info.get("stock", 0) == 0:
-                return
-            if info.get("note") in ("platform_unsupported", "unsupported_link"):
+            note = info.get("note")
+            if note in ("platform_unsupported", "unsupported_link"):
                 await app.bot.send_message(chat_id,
                     "⚠️ Tidak bisa membaca ID produk dari link ini.\n"
                     "Kirim link produk Shopee yang LENGKAP (mengandung .../product/<id>/<id> "
                     "atau ...-i.<id>.<id>), atau coba link 'Salin Tautan' dari app Shopee.",
                     reply_markup=main_menu())
+                return
+            if note == "read_failed":
+                await app.bot.send_message(chat_id,
+                    "⚠️ <b>Gagal baca stok</b> (kemungkinan anti-bot Shopee).\n"
+                    f"Detail: <code>{info.get('detail','?')}</code>\n\n"
+                    "Monitor tetap mencoba ulang. Kalau terus gagal, kita pindah ke "
+                    "<b>plan C</b>: baca stok dari halaman produk langsung.",
+                    parse_mode=ParseMode.HTML)
+                return
+            if note == "initial":
+                st = info.get("stock", 0)
+                if st > 0:
+                    pass  # lanjut ke notif stok-tersedia di bawah
+                else:
+                    await app.bot.send_message(chat_id,
+                        f"🔎 Monitor OK. Stok sekarang: <b>{st}</b> (habis). "
+                        "Kamu akan dapat notif begitu restock.",
+                        parse_mode=ParseMode.HTML)
+                    return
+            if info.get("stock", 0) == 0:
                 return
             harga = f"Rp{info['price']:,.0f}".replace(",", ".") if info.get("price") else "-"
             flash = "⚡ FLASH SALE\n" if info.get("flash") else ""
