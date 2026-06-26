@@ -1,7 +1,7 @@
 import os
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
-from config.settings import HEADLESS, SLOW_MO_MS, DEFAULT_PROXY, SESSIONS_DIR, CHROME_USER_DATA_DIR
+from config.settings import HEADLESS, SLOW_MO_MS, DEFAULT_PROXY, SESSIONS_DIR, CHROME_USER_DATA_DIR, CHROME_CDP_URL
 from utils.logger import get_logger
 
 log = get_logger()
@@ -43,6 +43,19 @@ class BrowserEngine:
 
     async def start(self, headless: bool | None = None):
         self._pw = await async_playwright().start()
+        # === MODE CDP: tempel ke Chrome asli yg sudah berjalan (anti-deteksi terkuat) ===
+        if CHROME_CDP_URL:
+            self._cdp = True
+            browser = await self._pw.chromium.connect_over_cdp(CHROME_CDP_URL)
+            self._browser = browser
+            # pakai context default yg sudah ada (profil & fingerprint Chrome asli)
+            self.context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            await self.context.add_init_script(STEALTH_JS)
+            pages = self.context.pages
+            self.page = pages[0] if pages else await self.context.new_page()
+            log.info(f"[{self.account}] ATTACH ke Chrome asli via CDP: {CHROME_CDP_URL}")
+            return
+        self._cdp = False
         kwargs = {
             "user_data_dir": self.profile_dir,
             "headless": HEADLESS if headless is None else headless,
@@ -91,10 +104,21 @@ class BrowserEngine:
         return p
 
     async def close(self):
-        if self.context:
-            await self.context.close()
-        if self._pw:
-            await self._pw.stop()
+        try:
+            if getattr(self, "_cdp", False):
+                # JANGAN tutup Chrome milik user; cukup lepas koneksi
+                if getattr(self, "_browser", None):
+                    await self._browser.close()  # close koneksi CDP, Chrome tetap hidup
+            elif self.context:
+                await self.context.close()
+        except Exception as e:
+            log.warning(f"close: {e}")
+        try:
+            if self._pw:
+                await self._pw.stop()
+        except Exception:
+            pass
+
 
     def wipe_profile(self):
         import shutil
