@@ -59,6 +59,45 @@ async def fetch_shopee_stock(client: httpx.AsyncClient, shop_id: int, item_id: i
     return {"name": name, "stock": total, "price": price, "flash": flash}
 
 
+async def fetch_shopee_stock_via_page(page, shop_id: int, item_id: int):
+    """Ambil stok lewat KONTEKS HALAMAN Chrome (CDP) yang sudah login.
+    Request dijalankan dari dalam shopee.co.id -> membawa cookie + token sesi,
+    sehingga lolos anti-bot 403 yang menimpa httpx polos."""
+    api = f"https://shopee.co.id/api/v4/pdp/get_pc?item_id={item_id}&shop_id={shop_id}"
+    js = """
+    async (url) => {
+        try {
+            const r = await fetch(url, {
+                headers: {"x-api-source": "pc", "x-shopee-language": "id"},
+                credentials: "include"
+            });
+            if (!r.ok) return {ok:false, status:r.status};
+            const j = await r.json();
+            return {ok:true, data:j};
+        } catch (e) { return {ok:false, error:String(e)}; }
+    }
+    """
+    try:
+        res = await page.evaluate(js, api)
+    except Exception as e:
+        log.debug(f"via_page evaluate error: {e}")
+        return None
+    if not res or not res.get("ok"):
+        log.debug(f"via_page gagal: {res}")
+        return None
+    item = (((res.get("data") or {}).get("data") or {}).get("item")) or {}
+    if not item:
+        return None
+    stock = item.get("stock", 0) or 0
+    name = item.get("title") or item.get("name") or "Produk"
+    price = (item.get("price") or 0) / 100000
+    models = item.get("models") or []
+    model_stock = sum((mm.get("stock", 0) or 0) for mm in models) if models else 0
+    total = max(stock, model_stock)
+    flash = bool(item.get("flash_sale") or item.get("is_flash_sale"))
+    return {"name": name, "stock": total, "price": price, "flash": flash}
+
+
 class StockMonitor:
     """Monitor stok SEMI-OTOMATIS.
 
@@ -67,11 +106,12 @@ class StockMonitor:
     - Tidak melakukan checkout otomatis: hanya memberi sinyal untuk notifikasi.
     """
 
-    def __init__(self, url: str, on_restock, interval=8, jitter=4):
+    def __init__(self, url: str, on_restock, interval=8, jitter=4, page=None):
         self.url = url
         self.on_restock = on_restock          # async callback(info: dict)
         self.interval = interval              # detik antar cek
         self.jitter = jitter                  # variasi acak biar tidak seragam
+        self.page = page                      # halaman Chrome CDP login (disarankan)
         self._running = False
 
     async def start(self, max_minutes=720):
@@ -89,7 +129,10 @@ class StockMonitor:
             for _ in range(loops):
                 if not self._running:
                     break
-                info = await fetch_shopee_stock(client, shop_id, item_id)
+                if self.page is not None:
+                    info = await fetch_shopee_stock_via_page(self.page, shop_id, item_id)
+                else:
+                    info = await fetch_shopee_stock(client, shop_id, item_id)
                 if info is not None:
                     in_stock = info["stock"] > 0
                     # trigger HANYA saat transisi habis -> ada

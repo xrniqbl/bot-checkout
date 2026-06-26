@@ -3,6 +3,8 @@ from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.constants import ParseMode
 import asyncio
 from core.stock_monitor import StockMonitor
+from core.browser import BrowserEngine
+from utils.notify_whatsapp import send_whatsapp, whatsapp_enabled
 from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
                           CallbackQueryHandler, ContextTypes, filters)
 import io
@@ -143,6 +145,9 @@ async def on_button(update: Update, ctx):
         mon = tasks.pop(q.message.chat_id, None)
         if mon:
             try: mon["monitor"].stop(); mon["task"].cancel()
+            except Exception: pass
+            try:
+                if mon.get("engine"): await mon["engine"].close()
             except Exception: pass
             await q.edit_message_text("🛑 Monitor stok dihentikan.", reply_markup=back_btn())
         else:
@@ -349,10 +354,24 @@ async def on_text(update: Update, ctx):
                 f"📊 Sisa stok: <b>{info['stock']}</b>\n\n"
                 f"👆 Tap tombol di bawah untuk checkout sendiri (di app/browser kamu).",
                 parse_mode=ParseMode.HTML, reply_markup=kb)
+            if whatsapp_enabled():
+                await send_whatsapp(
+                    f"STOK TERSEDIA! {info.get('name','Produk')} | sisa {info['stock']} | "
+                    f"checkout: {url}")
 
-        monitor = StockMonitor(url, on_restock, interval=8, jitter=4)
+        # buka sesi Chrome login (CDP) supaya baca stok lolos anti-bot 403
+        engine = BrowserEngine("akun1")
+        try:
+            page = await engine.start()
+        except Exception as e:
+            await update.message.reply_text(
+                f"⚠️ Tidak bisa connect ke Chrome (CDP). Pastikan Chrome jalan dgn "
+                f"--remote-debugging-port & CHROME_CDP_URL diset.\nDetail: {e}",
+                reply_markup=main_menu())
+            return
+        monitor = StockMonitor(url, on_restock, interval=8, jitter=4, page=page)
         task = asyncio.create_task(monitor.start(max_minutes=720))
-        already[chat_id] = {"monitor": monitor, "task": task, "url": url}
+        already[chat_id] = {"monitor": monitor, "task": task, "url": url, "engine": engine}
         await update.message.reply_text(
             "✅ <b>Monitor stok aktif!</b>\n"
             "🔍 Bot memantau lewat data publik (aman dari anti-bot).\n"
