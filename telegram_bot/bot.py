@@ -343,12 +343,19 @@ async def on_text(update: Update, ctx):
                     reply_markup=main_menu())
                 return
             if note == "read_failed":
-                await app.bot.send_message(chat_id,
-                    "⚠️ <b>Gagal baca stok</b> (kemungkinan anti-bot Shopee).\n"
-                    f"Detail: <code>{info.get('detail','?')}</code>\n\n"
-                    "Monitor tetap mencoba ulang. Kalau terus gagal, kita pindah ke "
-                    "<b>plan C</b>: baca stok dari halaman produk langsung.",
-                    parse_mode=ParseMode.HTML)
+                detail = info.get("detail", "?")
+                if "captcha" in str(detail):
+                    await app.bot.send_message(chat_id,
+                        "🛑 <b>Shopee minta verifikasi (CAPTCHA).</b>\n"
+                        "👉 Buka jendela <b>Chrome</b> (port 9222), selesaikan captcha "
+                        "sampai masuk halaman produk normal.\n\n"
+                        "Bot menunggu & akan otomatis lanjut baca stok begitu kamu selesai.",
+                        parse_mode=ParseMode.HTML)
+                else:
+                    await app.bot.send_message(chat_id,
+                        f"⚠️ <b>Gagal baca stok.</b> Detail: <code>{detail}</code>\n"
+                        "Monitor tetap mencoba ulang.",
+                        parse_mode=ParseMode.HTML)
                 return
             if note == "initial":
                 st = info.get("stock", 0)

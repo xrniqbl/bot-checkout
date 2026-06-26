@@ -127,13 +127,13 @@ async def fetch_shopee_stock_via_dom(page, url: str):
     if on_captcha:
         return {"_error": "captcha_manual"}
     try:
-        if on_product:
-            await page.reload(wait_until="domcontentloaded", timeout=30000)
-        else:
+        if not on_product:
+            # belum di produk -> goto sekali
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2500)
+        # kalau sudah di produk: baca DOM apa adanya (tanpa reload paksa)
     except Exception as e:
         return {"_error": f"nav: {e}"}
-    await page.wait_for_timeout(2500)
     cur = (page.url or "").lower()
     if ("/verify/" in cur) or ("anti_bot" in cur):
         return {"_error": "captcha_manual"}
@@ -213,6 +213,7 @@ class StockMonitor:
         self.jitter = jitter                  # variasi acak biar tidak seragam
         self.page = page                      # halaman Chrome CDP login (disarankan)
         self._running = False
+        self._err_count = 0
 
     async def start(self, max_minutes=720):
         self._running = True
@@ -245,13 +246,17 @@ class StockMonitor:
                 log.info(f"[poll] info={info}")
                 # diagnosa kegagalan baca stok
                 if info is not None and info.get("_error"):
-                    if first:
+                    err = info.get("_error")
+                    # ingatkan tiap ~30 dtk utk captcha; sekali utk error lain
+                    do_notify = first or (("captcha" in str(err)) and (self._err_count % 3 == 0))
+                    if do_notify:
                         try:
                             await self.on_restock({"name": "Produk", "stock": -1, "price": 0,
                                                    "flash": False, "note": "read_failed",
-                                                   "detail": info.get("_error")})
+                                                   "detail": err})
                         except Exception as e:
                             log.exception(f"on_restock(read_failed) error: {e}")
+                    self._err_count += 1
                     first = False
                     await asyncio.sleep(self.interval + random.uniform(0, self.jitter))
                     continue
